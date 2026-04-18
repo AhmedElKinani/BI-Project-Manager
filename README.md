@@ -1,8 +1,9 @@
-# BI Project Management Dashboard
+# BI Project Management tool
 
 A modern, robust DataOps/MLOps lifecycle management tool designed to track complex Business Intelligence and Data Analytics projects through the CRISP-DM phases.
 
-![Dashboard Preview](https://via.placeholder.com/800x450?text=BI+Project+Management+Dashboard)
+<img width="1919" height="1000" alt="image" src="https://github.com/user-attachments/assets/6c4f55c7-6e67-4a51-9cb0-3382e22fb372" />
+
 
 ## Key Features
 
