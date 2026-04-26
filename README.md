@@ -1,76 +1,121 @@
-# BI Project Management tool
+# BI Project Manager
 
-A modern, robust DataOps/MLOps lifecycle management tool designed to track complex Business Intelligence and Data Analytics projects through the CRISP-DM phases.
+A comprehensive **Business Intelligence Project Management & Analytics Platform** built with Preact + HTM (frontend) and Python/SQLite (backend). Designed for managing BI/DataOps project lifecycles using the CRISP-DM methodology.
 
-<img width="1919" height="1000" alt="image" src="https://github.com/user-attachments/assets/6c4f55c7-6e67-4a51-9cb0-3382e22fb372" />
+## Features
 
+- **Dashboard** — Real-time project health monitoring with progress vs timeline tracking
+- **Task Management** — Full task lifecycle: create, assign, accept, track, resolve
+- **Team Pool** — Unassigned task queue for team members to claim
+- **Task Analytics** — TTR/TLC metrics in days + hours, SLA indicators, filterable views
+- **Project Governance** — Phase submissions, stakeholder tracking, multi-team coordination
+- **Communications** — Team channels, private messaging, broadcast announcements
+- **Audit Trail** — Full audit log of all system actions
+- **Admin Panel** — User management, role-based access control (Admin / Leader / Member)
+- **Role-Based Security** — Scoped views and actions per user role
 
-## Key Features
+## Quick Start (Local)
 
-- **Lifecycle Tracking**: Full management of projects from Business Understanding to Deployment.
-- **Production Toggling**: Administrative control to flag projects as "New" or "Production".
-- **Task Management**: Granular task tracking tied to specific CRISP-DM phases and project teams.
-- **Audit Logging**: Comprehensive system record of all user actions for transparency and accountability.
-- **Team Workload Visualization**: Real-time metrics on team capacity and project distribution.
+```bash
+# Clone the repository
+git clone https://github.com/AhmedElKinani/BI-Project-Manager.git
+cd BI-Project-Manager
 
-## Technical Stack
+# Run the server (Python 3.8+ required, no external dependencies)
+python3 backend.py
 
-- **Frontend**: Vanilla JavaScript (Preact + HTM), CSS3 (Modern Glassmorphism Design).
-- **Backend**: Python 3.9 (Standard Library `http.server`).
-- **Database**: SQLite3.
-- **Infrastructure**: Dockerized for seamless deployment.
+# Open in browser
+open http://localhost:8080
+```
 
-## Getting Started
+**Default Admin Account:** `admin` / `admin123`
 
-### Prerequisites
+## Docker Deployment
 
-- [Docker](https://www.docker.com/get-started) installed on your system.
+```bash
+# Build the image
+docker build -t bi-project-manager .
 
-### Deployment with Docker
+# Run with persistent database storage
+docker run -d \
+  -p 8080:8080 \
+  -v bi-data:/app/data \
+  --name bi-manager \
+  bi-project-manager
 
-To get the application up and running quickly:
+# Access the app
+open http://localhost:8080
+```
 
-1. **Build the Docker Image**:
-   ```bash
-   docker build -t bi-project-manager .
-   ```
+### Docker Compose (optional)
 
-2. **Run the Container**:
-   ```bash
-   docker run -d -p 8080:8080 --name bi-manager bi-project-manager
-   ```
+Create a `docker-compose.yml`:
 
-3. **Access the Application**:
-   Open your browser and navigate to:
-   [http://localhost:8080](http://localhost:8080)
+```yaml
+version: '3.8'
+services:
+  bi-manager:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - bi-data:/app/data
+    restart: unless-stopped
 
-### Local Development (Alternative)
+volumes:
+  bi-data:
+```
 
-If you prefer to run it without Docker:
+Then run:
+```bash
+docker compose up -d
+```
 
-1. Ensure Python 3.9+ is installed.
-2. Run the backend:
-   ```bash
-   python backend.py
-   ```
-3. Access at [http://localhost:8080](http://localhost:8080).
+## Project Structure
 
-## Access & Credentials
+```
+BI-Project-Manager/
+├── backend.py        # Python HTTP server + SQLite API (no external deps)
+├── index.html        # Entry point HTML
+├── App.js            # Preact + HTM frontend (single-file SPA)
+├── styles.css        # Theme & layout (premium dark mode)
+├── mockData.js       # Shared constants (PHASES, TEAMS)
+├── Dockerfile        # Production container definition
+├── .dockerignore     # Docker build exclusions
+├── .gitignore        # Git exclusions
+└── README.md         # This file
+```
 
-The application is seeded with demo accounts for evaluation:
+## Tech Stack
 
-- **Admin User**:
-    - Username: `admin`
-    - Password: `admin`
-- **Team Users**:
-    - Usernames: `dev_user`, `de_user`, `ds_user`
-    - Password: `password`
+| Layer     | Technology                        |
+|-----------|-----------------------------------|
+| Frontend  | Preact + HTM (CDN, no build step) |
+| Backend   | Python stdlib `http.server`       |
+| Database  | SQLite (file-based, zero-config)  |
+| Container | Docker (Python 3.11-slim)         |
 
-## Project Initialization
+## Environment Variables
 
-On the first run, the system automatically:
-1. Creates the SQLite database (`bi_manager.db`).
-2. Seeds sample projects, historical records, and tasks.
+| Variable   | Default          | Description                |
+|------------|------------------|----------------------------|
+| `DB_PATH`  | `bi_manager.db`  | Path to the SQLite database |
 
----
-Built with ❤️ for DataOps teams.
+## Roles & Permissions
+
+| Permission                   | Admin | Leader | Member |
+|------------------------------|:-----:|:------:|:------:|
+| View Dashboard               |   ✓   |   ✓    |   ✓    |
+| Create/Manage Users          |   ✓   |        |        |
+| Assign Tasks                 |   ✓   |   ✓    |        |
+| Self-Assign Tasks            |   ✓   |   ✓    |   ✓    |
+| Claim Pool Tasks             |   ✓   |   ✓    |   ✓    |
+| View All Teams Pool          |   ✓   |        |        |
+| Submit Phase Transitions     |   ✓   |   ✓    |        |
+| Broadcast Messages           |   ✓   |   ✓    |        |
+| View All Task Analytics      |   ✓   |        |        |
+| View Team Task Analytics     |   ✓   |   ✓    |        |
+
+## License
+
+See [LICENSE](LICENSE) for details.

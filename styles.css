@@ -93,23 +93,52 @@ p { color: var(--text-secondary); }
 
 .nav-links {
   display: flex;
-  gap: 1rem;
+  align-items: center;
+  gap: 0.25rem;
+  overflow-x: auto;
+  flex: 1;
+  min-width: 0;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  padding: 0 0.5rem;
+}
+.nav-links::-webkit-scrollbar { display: none; }
+
+.nav-group-sep {
+  width: 1px;
+  height: 1.5rem;
+  background: rgba(255,255,255,0.1);
+  flex-shrink: 0;
+  margin: 0 0.5rem;
+}
+
+.nav-group-label {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-secondary);
+  opacity: 0.7;
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding: 0 0.25rem;
 }
 
 .btn {
   background: transparent;
   color: var(--text-secondary);
   border: none;
-  padding: 0.5rem 1rem;
+  padding: 0.4rem 0.7rem;
   border-radius: var(--radius-md);
-  font-size: 0.875rem;
+  font-size: 0.82rem;
   font-weight: 500;
   cursor: pointer;
   transition: var(--transition);
   font-family: inherit;
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .btn:hover {
@@ -686,4 +715,251 @@ th.sticky-left { z-index: 20; }
   top: 0;
   z-index: 5;
   background: var(--bg-color-secondary);
+}
+
+/* ── NEW: Refactor specific styles ── */
+
+/* SLA Badges */
+.sla-good { color: var(--accent-green); background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); }
+.sla-warn { color: var(--accent-orange); background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.2); }
+.sla-breach { color: var(--accent-pink); background: rgba(236, 72, 153, 0.1); border: 1px solid rgba(236, 72, 153, 0.2); }
+
+/* Task Pools */
+.kanban-pool-card {
+  border-left: 3px solid var(--accent-purple);
+}
+
+/* Notifications */
+.notif-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  background: var(--accent-pink);
+  color: white;
+  font-size: 0.6rem;
+  font-weight: bold;
+  height: 16px;
+  min-width: 16px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+}
+
+.notif-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 0.5rem;
+  width: 320px;
+  background: var(--bg-color-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 100;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.notif-item {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  transition: var(--transition);
+  cursor: pointer;
+}
+.notif-item:hover { background: rgba(255, 255, 255, 0.05); }
+.notif-item.unread { border-left: 3px solid var(--accent-blue); background: rgba(59, 130, 246, 0.05); }
+
+/* Chat Interface */
+.chat-container {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  height: calc(100vh - 130px);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+
+.channel-sidebar {
+  width: 250px;
+  background: var(--bg-color-secondary);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+}
+
+.channel-item {
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  transition: var(--transition);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-secondary);
+}
+.channel-item:hover { background: rgba(255, 255, 255, 0.05); }
+.channel-item.active { background: rgba(59, 130, 246, 0.1); color: var(--text-primary); border-left: 3px solid var(--accent-blue); }
+
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.chat-bubble {
+  max-width: 70%;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-lg);
+  background: var(--bg-color-secondary);
+  border: 1px solid var(--border-color);
+}
+.chat-bubble.own {
+  align-self: flex-end;
+  background: rgba(59, 130, 246, 0.15);
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+/* Progress Ring */
+.progress-ring {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.progress-ring::before {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  background: var(--bg-color);
+  border-radius: 50%;
+  z-index: 1;
+}
+.progress-ring span { position: relative; z-index: 2; }
+
+/* ── Task Comment Thread ── */
+.comment-bubble {
+  background: rgba(0,0,0,0.25);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  border-left: 2px solid rgba(255,255,255,0.1);
+  transition: var(--transition);
+}
+.comment-bubble:hover { background: rgba(255,255,255,0.03); }
+.comment-bubble.mine { border-left-color: var(--accent-blue); }
+
+/* ── Analytics Accordion ── */
+.accordion-row {
+  cursor: pointer;
+  transition: var(--transition);
+  border-radius: var(--radius-md);
+}
+.accordion-row:hover { background: rgba(255,255,255,0.03); }
+
+/* ── Phase Submission Panel ── */
+.phase-submit-panel {
+  border: 1px solid rgba(139,92,246,0.3);
+  background: rgba(139,92,246,0.05);
+  border-radius: var(--radius-md);
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+/* ── Task card clickable hover ── */
+.task-card-clickable {
+  cursor: pointer;
+  transition: var(--transition);
+}
+.task-card-clickable:hover {
+  border-color: var(--accent-blue) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(59,130,246,0.15);
+}
+
+/* ── Phase submit panel ── */
+.phase-submit-panel {
+  background: var(--bg-panel);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+}
+
+/* ── Nav group labels and separators ── */
+.nav-group-label {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+  opacity: 0.55;
+  white-space: nowrap;
+  padding: 0 0.25rem;
+  align-self: center;
+}
+.nav-group-sep {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
+  margin: 0 0.25rem;
+  align-self: center;
+}
+
+/* ── Clickable table rows ── */
+tr.accordion-row {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+tr.accordion-row:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+/* ── SLA status tags ── */
+.sla-good  { background: rgba(16,185,129,0.12); color: var(--accent-green); }
+.sla-warn  { background: rgba(251,191,36,0.12);  color: var(--accent-orange); }
+.sla-breach{ background: rgba(239,68,68,0.12);   color: var(--accent-pink); }
+
+/* ── DM channel item ── */
+.channel-item { display: flex; align-items: center; gap: 0.5rem; }
+
+/* ── Data Grid Table (Readability Focus) ── */
+.data-grid-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  text-align: left;
+}
+.data-grid-table th, .data-grid-table td {
+  padding: 0.75rem 1rem;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  text-align: left;
+  vertical-align: middle;
+}
+.data-grid-table th:last-child, .data-grid-table td:last-child {
+  border-right: none;
+}
+.data-grid-table thead tr {
+  background: rgba(0, 0, 0, 0.3);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.15);
+}
+.data-grid-table tbody tr {
+  border-bottom: 1px solid var(--border-color);
+}
+.data-grid-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.04);
 }

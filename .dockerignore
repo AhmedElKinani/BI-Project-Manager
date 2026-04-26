@@ -1,0 +1,28 @@
+# Database (generated at runtime)
+*.db
+
+# Server logs
+server.log
+
+# Git
+.git/
+.gitignore
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Development-only scripts (not needed in production)
+patch_app*.py
+generate_app_js.py
+validate.html
+backup_new_features/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
