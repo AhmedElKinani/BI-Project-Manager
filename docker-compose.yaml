@@ -1,0 +1,14 @@
+services:
+  bi-manager:
+    build: .
+    container_name: bi-manager
+    image: bi-manager:v1
+    ports:
+      - "8080:8080"
+    volumes:
+      - bi-manager-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  bi-manager-data:
+    name: bi-manager-data

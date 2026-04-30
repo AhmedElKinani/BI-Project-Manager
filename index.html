@@ -5,13 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BI Project Management Dashboard</title>
     <meta name="description" content="Dashboard to manage and track the lifecycle of complex Business Intelligence and Data Analytics projects.">
-    <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- ── Self-hosted fonts (no internet required) ─────────────────────── -->
+    <link rel="stylesheet" href="/vendor/css/inter-font.css">
+
+    <!-- ── Self-hosted Font Awesome 6.4.0 ───────────────────────────────── -->
+    <link rel="stylesheet" href="/vendor/css/font-awesome.min.css">
+
+    <!-- ── App styles ────────────────────────────────────────────────────── -->
     <link rel="stylesheet" href="styles.css">
-    <!-- Load Icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- ── Import Map: redirect CDN module URLs to local vendor files ────── -->
+    <!-- This means App.js does NOT need to be changed at all.              -->
+    <script type="importmap">
+    {
+      "imports": {
+        "https://esm.sh/preact":        "/vendor/js/preact.js",
+        "https://esm.sh/preact/hooks":  "/vendor/js/preact-hooks.js",
+        "https://esm.sh/htm":           "/vendor/js/htm.js"
+      }
+    }
+    </script>
 </head>
 <body>
     <div id="app"></div>

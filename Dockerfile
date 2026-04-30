@@ -25,6 +25,9 @@ COPY App.js .
 COPY styles.css .
 COPY mockData.js .
 
+# Copy self-hosted vendor assets (fonts, icons, JS libs — no internet needed)
+COPY vendor/ ./vendor/
+
 # Set environment variable so backend.py can optionally use it for DB path
 ENV DB_PATH=/app/data/bi_manager.db
 ENV PYTHONUNBUFFERED=1
