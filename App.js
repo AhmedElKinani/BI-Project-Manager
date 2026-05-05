@@ -4,6 +4,95 @@ import htm from 'https://esm.sh/htm';
 import { PHASES, TEAMS } from './mockData.js';
 
 const html = htm.bind(h);
+const APP_DIALOG_EVENT = 'bi:app-dialog';
+
+const openAppDialog = (config) => {
+  if (typeof window === 'undefined') {
+    return Promise.resolve(config?.type === 'prompt' ? null : false);
+  }
+  return new Promise((resolve) => {
+    window.dispatchEvent(new CustomEvent(APP_DIALOG_EVENT, { detail: { config, resolve } }));
+  });
+};
+
+const appConfirm = (message, title = 'Please Confirm') =>
+  openAppDialog({ type: 'confirm', title, message });
+
+const appAlert = (message, title = 'Notice') =>
+  openAppDialog({ type: 'alert', title, message });
+
+const appPrompt = (message, defaultValue = '', title = 'Input Required') =>
+  openAppDialog({ type: 'prompt', title, message, defaultValue });
+
+const AppDialogHost = () => {
+  const [dialogReq, setDialogReq] = useState(null);
+  const [promptValue, setPromptValue] = useState('');
+
+  useEffect(() => {
+    const handleDialog = (event) => {
+      const req = event.detail;
+      setDialogReq(req);
+      setPromptValue(req?.config?.defaultValue ?? '');
+    };
+    window.addEventListener(APP_DIALOG_EVENT, handleDialog);
+    return () => window.removeEventListener(APP_DIALOG_EVENT, handleDialog);
+  }, []);
+
+  if (!dialogReq) return null;
+
+  const { config, resolve } = dialogReq;
+  const close = (value) => {
+    resolve(value);
+    setDialogReq(null);
+  };
+
+  const titleColor = config.type === 'alert'
+    ? 'var(--accent-orange)'
+    : config.type === 'prompt'
+      ? 'var(--accent-blue)'
+      : 'var(--accent-purple)';
+
+  return html`
+    <div class="modal-overlay" onClick=${(e) => e.target === e.currentTarget && close(config.type === 'prompt' ? null : false)}>
+      <div class="modal-content" style="max-width:520px;">
+        <div class="modal-header">
+          <div>
+            <h3 style="margin:0;font-size:1.1rem;color:${titleColor};">${config.title}</h3>
+            <p style="margin:0.5rem 0 0 0;font-size:0.82rem;color:var(--text-secondary);">${config.message}</p>
+          </div>
+          <button class="modal-close" onClick=${() => close(config.type === 'prompt' ? null : false)}>x</button>
+        </div>
+        <div class="modal-body" style="padding:1.2rem 1.5rem;">
+          ${config.type === 'prompt' && html`
+            <input
+              class="form-input"
+              style="width:100%;margin-bottom:1rem;"
+              value=${promptValue}
+              onInput=${(e) => setPromptValue(e.target.value)}
+              onKeyDown=${(e) => {
+                if (e.key === 'Enter') close(promptValue);
+                if (e.key === 'Escape') close(null);
+              }}
+              autofocus
+            />
+          `}
+          <div style="display:flex;justify-content:flex-end;gap:0.6rem;">
+            ${config.type !== 'alert' && html`
+              <button class="btn" onClick=${() => close(config.type === 'prompt' ? null : false)}>Cancel</button>
+            `}
+            <button
+              class="btn active"
+              style="background:${config.type === 'alert' ? 'var(--accent-orange)' : 'var(--accent-blue)'};color:white;"
+              onClick=${() => close(config.type === 'prompt' ? promptValue : true)}
+            >
+              ${config.type === 'alert' ? 'OK' : 'Confirm'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+};
 
 // ─── Utils ───────────────────────────────────────────────────────────────────
 const getInitials = (name) => name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
@@ -264,7 +353,8 @@ const AdminPanel = ({ users, fetchUsers }) => {
   };
 
   const handleDelete = async (u) => {
-    if (!confirm(`Delete user "${u.username}"? This cannot be undone.`)) return;
+    const confirmed = await appConfirm(`Delete user "${u.username}"? This cannot be undone.`, 'Delete User');
+    if (!confirmed) return;
     await fetch('/api/users/' + u.id, { method: 'DELETE' });
     fetchUsers();
   };
@@ -420,10 +510,11 @@ const AdminPanel = ({ users, fetchUsers }) => {
 // ─── ProjectsManagementTab ────────────────────────────────────────────────────
 const ProjectsManagementTab = ({ projects, fetchProjects, setEditId }) => {
   const handleDelete = async (id, title) => {
-    if (!confirm('Delete project "' + title + '"?\nThis removes all history and cannot be undone.')) return;
+    const confirmed = await appConfirm(`Delete project "${title}"? This removes all history and cannot be undone.`, 'Delete Project');
+    if (!confirmed) return;
     const res = await fetch('/api/projects/' + id, { method: 'DELETE' });
     if (res.ok) fetchProjects();
-    else alert('Failed to delete project.');
+    else await appAlert('Failed to delete project.', 'Delete Failed');
   };
 
   return html`
@@ -686,7 +777,7 @@ const PhaseDrillDown = ({ project, phase, tasks, onClose, onUpdate }) => {
     let completed_by = task.completed_by || '';
 
     if (newStatus === 'done' && task.status !== 'done') {
-      const note = window.prompt("Task completed! Enter a resolution or completion note:", "");
+      const note = await appPrompt("Task completed! Enter a resolution or completion note:", "", 'Completion Note');
       if (note === null) return; // cancellation
       resolution_note = note;
       completed_by = currentUser.username;
@@ -1236,7 +1327,7 @@ const ProjectModalInner = ({ project, currentUser, onClose, onUpdate }) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    if (!res.ok) { alert('Save failed — check server logs.'); return; }
+    if (!res.ok) { await appAlert('Save failed — check server logs.', 'Save Failed'); return; }
     logAudit(currentUser, 'PROJECT_UPDATED',
       `Updated project ${project.id}. Production: ${payload.is_deployed ? 'YES' : 'NO'}`);
     setEditForm(payload);  // show committed state immediately in modal
@@ -1521,7 +1612,8 @@ const TaskManagementTab = ({ projects, tasks, fetchTasks, currentUser }) => {
   };
 
   const handleDelete = async (task) => {
-    if (!confirm(`Delete task "${task.title}"?`)) return;
+    const confirmed = await appConfirm(`Delete task "${task.title}"?`, 'Delete Task');
+    if (!confirmed) return;
     await fetch('/api/tasks/' + task.id, { method: 'DELETE' });
     logAudit(currentUser, 'TASK_DELETED', `Deleted task: ${task.title} (ID ${task.id})`);
     fetchTasks();
@@ -1885,7 +1977,7 @@ const MyTasksView = ({ tasks, projects, fetchTasks, currentUser }) => {
     await fetch('/api/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     setShowSelfAssign(false);
     fetchTasks();
-    alert('Task submitted for leader approval.');
+    await appAlert('Task submitted for leader approval.', 'Submitted');
   };
 
   const updateAcceptance = async (task, status) => {
@@ -1923,7 +2015,7 @@ const MyTasksView = ({ tasks, projects, fetchTasks, currentUser }) => {
     }
 
     if (newStatus === 'done' && task.status !== 'done') {
-      const note = window.prompt("Task completed! Enter a resolution or completion note:", "");
+      const note = await appPrompt("Task completed! Enter a resolution or completion note:", "", 'Completion Note');
       if (note === null) return; 
       resolution_note = note;
       completed_by = currentUser.username;
@@ -2172,7 +2264,7 @@ const ApprovalsView = ({ tasks, fetchTasks, currentUser, projects }) => {
 
   const handleReviewFinish = async (task, approved) => {
     if (approved) {
-        const note = window.prompt("Verify completion. Add a closing note if needed:", task.resolution_note || "");
+        const note = await appPrompt("Verify completion. Add a closing note if needed:", task.resolution_note || "", 'Verify Completion');
         if (note === null) return;
         const now = new Date().toISOString().split('.')[0].replace('T',' ');
         await fetch('/api/tasks/' + task.id, { 
@@ -2181,7 +2273,7 @@ const ApprovalsView = ({ tasks, fetchTasks, currentUser, projects }) => {
         });
         sendNotification(task.assignee, `Your task "${task.title}" has been verified and marked DONE.`, task.id);
     } else {
-        const reason = window.prompt("Task rejected. Why does it need more work?", "");
+        const reason = await appPrompt("Task rejected. Why does it need more work?", "", 'Return to In Progress');
         if (reason === null) return;
         await fetch('/api/tasks/' + task.id, { 
           method: 'PUT', headers: {'Content-Type':'application/json'}, 
@@ -2868,7 +2960,7 @@ const TaskDetailModal = ({ task, projects, currentUser, fetchTasks, onClose }) =
     }
 
     if (newStatus === 'done' && localStatus !== 'done') {
-      const note = window.prompt('Task completed! Enter a resolution note (optional):', '');
+      const note = await appPrompt('Task completed! Enter a resolution note (optional):', '', 'Completion Note');
       if (note === null) return;
       const now = new Date().toISOString().split('.')[0].replace('T',' ');
       extra = { ...extra, resolution_note: note, completed_by: task.assignee || currentUser.username, resolved_at: now };
@@ -3508,6 +3600,7 @@ const App = () => {
         ${activeTab === 'comms' && html`<${CommunicationsTab} currentUser=${currentUser} tasks=${tasksList} projects=${projectsList} />`}
       </main>
       <${ProjectModal} project=${selectedProject} currentUser=${currentUser} onClose=${() => setSelectedProjectId(null)} onUpdate=${fetchProjects} />
+      <${AppDialogHost} />
     </div>
   `;
 };
