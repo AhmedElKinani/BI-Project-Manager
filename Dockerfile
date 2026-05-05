@@ -20,6 +20,7 @@ RUN mkdir -p /app/data
 
 # Copy application files
 COPY backend.py .
+COPY seed_production.py .
 COPY index.html .
 COPY App.js .
 COPY styles.css .
