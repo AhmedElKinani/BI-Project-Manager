@@ -1959,7 +1959,7 @@ const MyTasksView = ({ tasks, projects, fetchTasks, currentUser }) => {
   const myTasks = tasks.filter(t => t.assignee === currentUser.username && t.approval_status === 'approved' && t.acceptance_status !== 'passed');
   
   const pending = myTasks.filter(t => t.acceptance_status === 'pending_acceptance');
-  const accepted = myTasks.filter(t => t.acceptance_status === 'accepted');
+  const accepted = myTasks.filter(t => t.acceptance_status === 'accepted' && t.status !== 'done');
 
   const [showSelfAssign, setShowSelfAssign] = useState(false);
   const [selfForm, setSelfForm] = useState({ 
