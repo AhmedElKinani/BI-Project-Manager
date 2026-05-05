@@ -3,7 +3,7 @@ services:
   bi-manager:
     build: .
     container_name: bi-manager
-    image: bi-manager:v1
+    image: bi-manager:v0.2
     ports:
       - "8080:8080"
     volumes:
