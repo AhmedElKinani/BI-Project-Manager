@@ -26,3 +26,4 @@ backup_new_features/
 __pycache__/
 *.pyc
 *.pyo
+patch_app*.py\ngenerate_app_js.py\nseed_production.py\nvalidate.html\nmigrate_passwords.py\nserver.log\n*.db\nbackup_new_features/\nalembic/
