@@ -26,3 +26,8 @@ patch_app*.py
 generate_app_js.py
 validate.html
 backup_new_features/
+seed_production.py
+migrate_passwords.py
+patch_app_v*.py
+execution_plan*.md
+init_db.sh

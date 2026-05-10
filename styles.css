@@ -39,6 +39,17 @@
   --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+:root[data-theme="light"] {
+  --bg-color: #f9fafb;
+  --bg-color-secondary: #ffffff;
+  --bg-panel: rgba(255, 255, 255, 0.8);
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --border-color: rgba(0, 0, 0, 0.1);
+  --hover-bg: rgba(0, 0, 0, 0.05);
+  --glass-border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
 * {
   margin: 0;
   padding: 0;
