@@ -24,6 +24,9 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       PYTHONUNBUFFERED: "1"
+      SEED_ADMIN_USER: ${SEED_ADMIN_USER:-admin}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-Welcome@123}
+      SEED_ADMIN_TEAM: ${SEED_ADMIN_TEAM:-Management}
     depends_on:
       postgres:
         condition: service_healthy

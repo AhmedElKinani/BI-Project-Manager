@@ -8,6 +8,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend.py database.py models.py ./
+COPY seed_production.py ./
 COPY index.html App.js styles.css mockData.js ./
 COPY vendor/ ./vendor/
 COPY components/ ./components/

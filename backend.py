@@ -423,6 +423,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 if __name__ == '__main__':
+    Base.metadata.create_all(bind=engine)
     seed_db()
     server_address = ('', 8080)
     httpd = ThreadedHTTPServer(server_address, APIHandler)
