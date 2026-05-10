@@ -1,16 +1,62 @@
-# Database (generated at runtime)
-*.db
+# Node.js dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+yarn.lock
+.pnpm-debug.log
 
-# Server logs
-server.log
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
+# Build outputs
 dist/
 build/
+coverage/
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Docker
+*.pid
+*.seed
+*.bak
+*.tmp
+*.swp
+docker-compose.override.yml
+docker-compose.override.yaml
+
+# VS Code
+.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Claude Cursor (AI editor configs)
+.claude/
+.claude/*
+cursor.json
+cursor-settings.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.gitignore
+.gitattributes
+
+# Misc
+*.tar
+*.zip
+*.gz
+*.tgz
+*.rar
+
 
 # OS files
 .DS_Store
