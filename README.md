@@ -71,6 +71,11 @@ Then run:
 docker compose up -d
 ```
 
+## Seed
+to run the seeded data for production run the command while in root:
+```bash
+docker exec -it bi-manager python3 /app/seed_production.py
+```
 ## Project Structure
 
 ```
