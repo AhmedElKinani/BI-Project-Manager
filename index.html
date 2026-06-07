@@ -1,9 +1,53 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <script>
+    (function() {
+      const savedTheme = localStorage.getItem('theme');
+      let theme = 'dark';
+      if (savedTheme === 'high-contrast') {
+        theme = 'light';
+      } else if (savedTheme) {
+        theme = savedTheme;
+      } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+        theme = 'light';
+      }
+      document.documentElement.setAttribute('data-theme', theme);
+      
+      const savedContrast = localStorage.getItem('high-contrast');
+      const contrast = savedTheme === 'high-contrast' ? 'true' : (savedContrast || 'false');
+      document.documentElement.setAttribute('data-contrast', contrast);
+    })();
+    </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BI Project Management Dashboard</title>
+    <script>
+    window.onerror = function(message, source, lineno, colno, error) {
+      console.error("Global Error Captured: ", message, " at ", source, ":", lineno, ":", colno);
+      var errDiv = document.createElement('div');
+      errDiv.id = 'js-error-display';
+      errDiv.style.color = 'red';
+      errDiv.style.padding = '20px';
+      errDiv.style.background = '#fff';
+      errDiv.style.zIndex = '999999';
+      errDiv.style.position = 'fixed';
+      errDiv.style.top = '0';
+      errDiv.style.left = '0';
+      errDiv.style.width = '100%';
+      errDiv.style.height = '100%';
+      errDiv.style.overflow = 'auto';
+      errDiv.innerHTML = '<h2>Uncaught JS Error:</h2><pre>' + message + '\nat ' + source + ':' + lineno + ':' + colno + '\n' + (error && error.stack || '') + '</pre>';
+      if (document.body) {
+        document.body.appendChild(errDiv);
+      } else {
+        window.addEventListener('DOMContentLoaded', function() {
+          document.body.appendChild(errDiv);
+        });
+      }
+      return false;
+    };
+    </script>
     <meta name="description" content="Dashboard to manage and track the lifecycle of complex Business Intelligence and Data Analytics projects.">
 
     <!-- ── Self-hosted fonts (no internet required) ─────────────────────── -->

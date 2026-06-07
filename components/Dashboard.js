@@ -1,16 +1,24 @@
-import { calculateOverallProgress, calculateTimelineProgress, ProjectBadges, getHealthStatus, getPhaseClass } from '../utils/core.js';
-import { PHASES, TEAMS } from '../utils/core.js';
+import { calculateOverallProgress, calculateTimelineProgress, ProjectBadges, getHealthStatus, getPhaseClass, getTeamClass, hasPermission } from '../utils/core.js';
+import { getPhases, getTeams } from '../utils/configStore.js';
+import { DeepDiveDrawer } from './DeepDiveDrawer.js';
 
 import { h } from 'https://esm.sh/preact';
-import { useState, useEffect, useMemo, useRef } from 'https://esm.sh/preact/hooks';
+import { useState, useEffect, useMemo } from 'https://esm.sh/preact/hooks';
 import htm from 'https://esm.sh/htm';
 export const html = htm.bind(h);
 
-export const Dashboard = ({ projects, tasks }) => {
+export const Dashboard = ({ projects, tasks, currentUser }) => {
   const [activeFilter, setActiveFilter] = useState({ type: 'ALL', value: null });
-  const [workloadView, setWorkloadView] = useState('projects'); // 'projects' | 'tasks'
+  const [workloadView, setWorkloadView] = useState('projects');
   const [taskFilterMember, setTaskFilterMember] = useState('all');
   const [taskFilterProject, setTaskFilterProject] = useState('all');
+  const [deepDiveItem, setDeepDiveItem] = useState(null);
+  const [deepDiveType, setDeepDiveType] = useState('project');
+
+  const allTeams = getTeams();
+  const hasReadAll = hasPermission(currentUser, 'project.read_all') || hasPermission(currentUser, 'analytics.read_all') || (currentUser && currentUser.role === 'admin');
+  const myTeams = currentUser ? (currentUser.teams || (currentUser.team ? [currentUser.team] : [])) : [];
+  const teamsToRender = hasReadAll ? allTeams : allTeams.filter(t => myTeams.includes(t));
 
   const total = projects.length;
   const deployedCount = projects.filter(p => Boolean(Number(p.is_deployed))).length;
@@ -19,7 +27,7 @@ export const Dashboard = ({ projects, tasks }) => {
   // Task workload by team
   const tasksByTeam = useMemo(() => {
     const map = {};
-    TEAMS.forEach(t => { map[t] = { total: 0, done: 0, inProgress: 0, blocked: 0 }; });
+    teamsToRender.forEach(t => { map[t] = { total: 0, done: 0, inProgress: 0, blocked: 0, estHours: 0, actHours: 0 }; });
     (tasks || []).forEach(t => {
       // Respect project filter if active
       if (activeFilter.type === 'PROJECT' && t.project_id !== activeFilter.value) return;
@@ -27,14 +35,16 @@ export const Dashboard = ({ projects, tasks }) => {
       map[t.team].total++;
       if (t.status === 'done') map[t.team].done++;
       else if (t.status === 'in_progress') map[t.team].inProgress++;
-      else if (t.status === 'blocked') map[t.team].blocked++;
+      else if (t.status === 'blocked' || t.is_blocked) map[t.team].blocked++;
+      map[t.team].estHours += (parseFloat(t.estimated_hours) || 0);
+      map[t.team].actHours += (parseFloat(t.actual_hours) || 0);
     });
     return map;
-  }, [tasks, projects, activeFilter]);
+  }, [tasks, projects, activeFilter, teamsToRender]);
 
   const teamStats = useMemo(() => {
     const stats = {};
-    TEAMS.forEach(t => { stats[t] = { preProd: 0, prodIter: 0 }; });
+    teamsToRender.forEach(t => { stats[t] = { preProd: 0, prodIter: 0 }; });
     projects.forEach(p => { 
       // Respect project filter if active
       if (activeFilter.type === 'PROJECT' && p.id !== activeFilter.value) return;
@@ -44,7 +54,7 @@ export const Dashboard = ({ projects, tasks }) => {
       } 
     });
     return stats;
-  }, [projects, activeFilter]);
+  }, [projects, activeFilter, teamsToRender]);
 
   const blockedCount = projects.filter(p => p.blockers && p.blockers.length > 0).length;
   const onTrackCount = activeTotal - blockedCount;
@@ -53,7 +63,7 @@ export const Dashboard = ({ projects, tasks }) => {
     const active = projects.filter(p => p.start_date && p.target_date);
     let onT = 0, late = 0, ahead = 0;
     active.forEach(p => {
-      const h = getHealthStatus(p);
+      const h = getHealthStatus(p, tasks);
       if (h.label === 'On Track') onT++;
       else if (h.label.startsWith('Ahead')) ahead++;
       else late++;
@@ -62,7 +72,7 @@ export const Dashboard = ({ projects, tasks }) => {
   }, [projects]);
 
   const phaseDistribution = useMemo(() => {
-    return PHASES.map(ph => ({
+    return getPhases().map(ph => ({
       phase: ph,
       count: projects.filter(p => p.phase === ph).length
     }));
@@ -78,7 +88,7 @@ export const Dashboard = ({ projects, tasks }) => {
         return activeFilter.value === 'Blocked' ? isBlocked : !isBlocked;
       }
       if (activeFilter.type === 'SCHED') {
-        const h = getHealthStatus(p);
+        const h = getHealthStatus(p, tasks);
         if (activeFilter.value === 'On Track') return h.label === 'On Track';
         if (activeFilter.value === 'Ahead') return h.label.startsWith('Ahead');
         if (activeFilter.value === 'Late') return h.label.startsWith('Late');
@@ -186,10 +196,10 @@ export const Dashboard = ({ projects, tasks }) => {
             </div>
           </div>
           <div style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:1rem;">
-            ${workloadView === 'projects' ? 'Pre-Prod vs Production Iterations' : 'Task load by team — Done · In Progress · Blocked'}
+            ${workloadView === 'projects' ? 'Pre-Prod vs Production Iterations' : 'Task load by team — Done · In Progress · Blocked | Actual / Estimated Hours'}
           </div>
           <div style="display:flex;flex-direction:column;gap:1.1rem;">
-            ${TEAMS.map(team => {
+            ${teamsToRender.map(team => {
               const sel = isActive('TEAM', team);
               if (workloadView === 'projects') {
                 const preProdCount = teamStats[team]?.preProd || 0;
@@ -212,7 +222,7 @@ export const Dashboard = ({ projects, tasks }) => {
                 `;
               } else {
                 const td = tasksByTeam[team] || {};
-                const maxT = Math.max(1, ...TEAMS.map(t => (tasksByTeam[t]?.total || 0)));
+                const maxT = Math.max(1, ...teamsToRender.map(t => (tasksByTeam[t]?.total || 0)));
                 const barW = td.total ? Math.max(5, Math.round((td.total / maxT) * 100)) : 0;
                 return html`
                   <div style="cursor:pointer;transition:var(--transition);padding:0.35rem 0.4rem;border-radius:6px;background:${sel ? 'rgba(255,255,255,0.07)' : 'transparent'};"
@@ -225,6 +235,10 @@ export const Dashboard = ({ projects, tasks }) => {
                         <span style="color:var(--accent-orange);"> ⚡${td.inProgress||0}</span>
                         ${td.blocked > 0 ? html`<span style="color:var(--accent-pink);"> ⚠${td.blocked}</span>` : ''}
                       </span>
+                    </div>
+                    <div style="font-size:0.7rem;color:var(--text-secondary);margin-bottom:0.4rem;display:flex;justify-content:space-between;">
+                      <span>Effort (Hours)</span>
+                      <span><strong style="color:${(td.actHours||0) > (td.estHours||0) ? 'var(--accent-pink)' : 'var(--accent-green)'}">${td.actHours||0}</strong> / ${td.estHours||0}</span>
                     </div>
                     <div style="height:6px;background:rgba(255,255,255,0.07);border-radius:3px;overflow:hidden;display:flex;">
                       ${td.total > 0 && html`
@@ -298,12 +312,15 @@ export const Dashboard = ({ projects, tasks }) => {
                 </thead>
                 <tbody>
                   ${activeProjects.map(p => {
-                    const overall = calculateOverallProgress(p);
+                    const overall = p.computed_progress !== undefined ? p.computed_progress : calculateOverallProgress(p, tasks);
                     const timeline = calculateTimelineProgress(p);
-                    const health = getHealthStatus(p);
+                    const health = getHealthStatus(p, tasks);
                     const latestNote = p.history && p.history.length > 0 ? p.history[p.history.length - 1].note : 'No status notes yet.';
                     return html`
-                      <tr style="border-top:1px solid var(--border-color);">
+                      <tr style="border-top:1px solid var(--border-color);cursor:pointer;"
+                        onClick=${() => { setDeepDiveItem(p); setDeepDiveType('project'); }}
+                        onMouseEnter=${e => e.currentTarget.style.background='rgba(59,130,246,0.04)'}
+                        onMouseLeave=${e => e.currentTarget.style.background=''}>
                         <td style="padding:0.75rem 0.5rem;">
                           <div style="font-weight:600;display:flex;align-items:center;gap:0.4rem;">
                             ${p.title}
@@ -312,6 +329,27 @@ export const Dashboard = ({ projects, tasks }) => {
                           <div style="margin-top:0.25rem;display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;">
                             <span class="tag ${getPhaseClass(p.phase)}">${p.phase}</span>
                             <${ProjectBadges} project=${p} />
+                          </div>
+                          <!-- ACTIVE STREAMS -->
+                          <div style="margin-top:0.6rem;display:flex;flex-direction:column;gap:0.3rem;">
+                            ${(() => {
+                              const streams = {};
+                              const pTasks = (tasks || []).filter(t => t.project_id === p.id);
+                              pTasks.forEach(t => {
+                                const k = `${t.crisp_dm_phase}|${t.team}`;
+                                if (!streams[k]) streams[k] = { phase: t.crisp_dm_phase, team: t.team, total: 0, done: 0 };
+                                streams[k].total++;
+                                if (t.status === 'done') streams[k].done++;
+                              });
+                              const activeStreams = Object.values(streams).filter(s => s.done < s.total);
+                              return activeStreams.map(s => html`
+                                <div style="display:flex;align-items:center;gap:0.4rem;font-size:0.68rem;">
+                                  <span class="tag ${getPhaseClass(s.phase)}" style="padding:0.1rem 0.3rem;font-size:0.62rem;opacity:0.9;">${s.phase}</span>
+                                  <span class="tag ${getTeamClass(s.team)}" style="padding:0.1rem 0.3rem;font-size:0.62rem;border:1px solid currentColor;">${s.team.replace(' Team','')}</span>
+                                  <span style="color:var(--text-secondary);">${Math.round(s.done/s.total*100)}%</span>
+                                </div>
+                              `);
+                            })()}
                           </div>
                         </td>
                         <td style="font-size:0.82rem;">
@@ -327,9 +365,27 @@ export const Dashboard = ({ projects, tasks }) => {
                             <span style="color:var(--accent-blue);font-weight:600;">Completion: ${overall}%</span>
                             <span style="color:var(--text-secondary);">Time elapsed: ${timeline}%</span>
                           </div>
-                          <div style="width:100%;height:6px;background:rgba(255,255,255,0.05);border-radius:4px;position:relative;">
-                            <div style="position:absolute;top:0;left:0;height:100%;width:${timeline}%;background:var(--text-secondary);opacity:0.3;border-radius:4px;"></div>
-                            <div style="position:absolute;top:0;left:0;height:100%;width:${overall}%;background:${health.color};border-radius:4px;box-shadow:0 0 4px ${health.color};"></div>
+                          <div style="width:100%;height:8px;background:rgba(255,255,255,0.05);border-radius:4px;position:relative;overflow:hidden;display:flex;">
+                            ${(() => {
+                              const pTasks = (tasks || []).filter(t => t.project_id === p.id);
+                              if (pTasks.length === 0) return html`<div style="height:100%;width:${overall}%;background:${health.color};opacity:0.5;"></div>`;
+                              
+                              const teams = [...new Set(pTasks.map(t => t.team))];
+                              return teams.map(team => {
+                                const teamTasks = pTasks.filter(t => t.team === team);
+                                const done = teamTasks.filter(t => t.status === 'done').length;
+                                const width = (teamTasks.length / pTasks.length) * 100;
+                                const pct = (done / teamTasks.length) * 100;
+                                const teamColor = team.includes('Dev') ? 'var(--accent-blue)' : team.includes('Eng') ? 'var(--accent-purple)' : 'var(--accent-green)';
+                                return html`
+                                  <div style="height:100%;width:${width}%;background:rgba(255,255,255,0.05);position:relative;border-right:1px solid rgba(0,0,0,0.2);">
+                                    <div style="height:100%;width:${pct}%;background:${teamColor};"></div>
+                                  </div>
+                                `;
+                              });
+                            })()}
+                            <!-- Timeline marker -->
+                            <div style="position:absolute;top:0;left:${timeline}%;height:100%;width:2px;background:white;opacity:0.4;z-index:2;" title="Timeline Position: ${timeline}%"></div>
                           </div>
                         </td>
                         <td><span style="color:${health.color};font-weight:bold;background:rgba(0,0,0,0.2);padding:0.2rem 0.6rem;border-radius:4px;white-space:nowrap;">${health.label}</span></td>
@@ -371,14 +427,17 @@ export const Dashboard = ({ projects, tasks }) => {
                 </thead>
                 <tbody>
                   ${productionProjects.map(p => {
-                    const overall = calculateOverallProgress(p);
+                    const overall = p.computed_progress !== undefined ? p.computed_progress : calculateOverallProgress(p, tasks);
                     const timeline = calculateTimelineProgress(p);
-                    const health = getHealthStatus(p);
+                    const health = getHealthStatus(p, tasks);
                     const latestNote = p.history && p.history.length > 0 ? p.history[p.history.length - 1].note : 'Successfully deployed.';
                     const iterNum = p.iteration || 1;
                     const isIter = p.is_iterating === 1;
                     return html`
-                      <tr style="border-top:1px solid rgba(74,222,128,0.1);">
+                      <tr style="border-top:1px solid rgba(74,222,128,0.1);cursor:pointer;"
+                        onClick=${() => { setDeepDiveItem(p); setDeepDiveType('project'); }}
+                        onMouseEnter=${e => e.currentTarget.style.background='rgba(74,222,128,0.04)'}
+                        onMouseLeave=${e => e.currentTarget.style.background=''}>
                         <td style="padding:0.75rem 0.5rem;">
                           <div style="font-weight:600;display:flex;align-items:center;gap:0.4rem;">
                             ${p.title}
@@ -434,6 +493,15 @@ export const Dashboard = ({ projects, tasks }) => {
       </div>
 
     </div>
+
+    <${DeepDiveDrawer}
+      item=${deepDiveItem}
+      type=${deepDiveType}
+      tasks=${tasks}
+      projects=${projects}
+      onClose=${() => setDeepDiveItem(null)}
+      onTaskClick=${t => { setDeepDiveItem(t); setDeepDiveType('task'); }}
+    />
   `;
 };
 

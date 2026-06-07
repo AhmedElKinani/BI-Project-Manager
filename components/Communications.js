@@ -1,10 +1,12 @@
-import { AppDialogHost, useSmartPoll, parseMessageContent, getInitials, apiFetch } from '../utils/core.js';
-import { PHASES, TEAMS } from '../utils/core.js';
+import { AppDialogHost, useSmartPoll, parseMessageContent, getInitials, apiFetch, hasPermission } from '../utils/core.js';
+import { loadConfig, getTeams } from '../utils/configStore.js';
 import { LoginScreen } from './LoginScreen.js';
 import { AdminPanel } from './AdminPanel.js';
-import { CreateProjectTab, ProjectModal, PhaseSubmissionTab, ProjectsManagementTab } from './ProjectManagement.js';
+import { CreateProjectTab, ProjectModal, PhaseSubmissionTab, ProjectsManagementTab, ProjectDetailInline, ProjectDocumentView } from './ProjectManagement.js';
 import { KanbanBoard } from './KanbanBoard.js';
 import { Dashboard } from './Dashboard.js';
+import { RoleDashboard } from './RoleDashboard.js';
+import { TaskFocusModal, PhaseSubmitModal } from './FocusModal.js';
 import { TeamPoolView, TaskDetailModal, TeamDashboardView, MyTasksView, ApprovalsView } from './TaskManagement.js';
 import { AuditLogTab } from './AuditLog.js';
 import { ProjectAnalyticsTab, TaskMonitoringTab } from './Analytics.js';
@@ -24,7 +26,7 @@ export const CommunicationsTab = ({ currentUser, tasks, projects }) => {
   // Build channel list based on role
   const buildChannels = () => {
     const base = ['General', '📢 Broadcast'];
-    if (currentUser.role === 'admin') base.push(...TEAMS);
+    if (currentUser.role === 'admin') base.push(...getTeams());
     else if (currentUser.team) base.push(currentUser.team);
     return [...new Set(base)];
   };
@@ -200,7 +202,7 @@ export const CommunicationsTab = ({ currentUser, tasks, projects }) => {
         </form>
       </div>
 
-      ${linkedTask && html`<${TaskDetailModal} task=${linkedTask} projects=${projects||[]} currentUser=${currentUser} fetchTasks=${() => {}} onClose=${() => setLinkedTask(null)} />`}
+      ${linkedTask && html`<${TaskDetailModal} task=${linkedTask} projects=${projects||[]} currentUser=${currentUser} fetchTasks=${fetchTasks} onClose=${() => setLinkedTask(null)} />`}
     </div>
   `;
 };
@@ -210,139 +212,718 @@ export const CommunicationsTab = ({ currentUser, tasks, projects }) => {
 
 
 export const App = () => {
-  const [currentUser, setCurrentUser] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('currentUser')); } catch { return null; }
-  });
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
   const [projectsList, setProjectsList] = useState([]);
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [openTabs, setOpenTabs] = useState(() => {
+    const saved = sessionStorage.getItem('bi_open_tabs');
+    return saved ? JSON.parse(saved) : [{ id: 'home', label: 'Home', icon: 'fa-house', pinned: true }];
+  });
+  const [activeTabId, setActiveTabId] = useState(() => {
+    return sessionStorage.getItem('bi_active_tab') || 'home';
+  });
+  const [sidebarPinned, setSidebarPinned] = useState(false);
+  const skipClose = useRef(false);
+  const [editFavorites, setEditFavorites] = useState(false);
+  const [favorites, setFavorites] = useState([]);
+  const sidebarRef = useRef(null);
+
   const [boardView, setBoardView] = useState('phase');
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [usersList, setUsersList] = useState([]);
+  const [globalSelectedTaskId, setGlobalSelectedTaskId] = useState(null);
+  const [tasksList, setTasksList] = useState([]);
+
+  // Global Focus Modals state
+  const [showTaskModal,  setShowTaskModal]  = useState(false);
+  const [showPhaseModal, setShowPhaseModal] = useState(false);
+  const [preselectedPhaseProject, setPreselectedPhaseProject] = useState('');
+  const [toastMsg, setToastMsg] = useState(null);
+
+  const [contextMenu, setContextMenu] = useState(null);
+
+  useEffect(() => {
+    const handleGlobalClick = () => setContextMenu(null);
+    window.addEventListener('click', handleGlobalClick);
+    return () => window.removeEventListener('click', handleGlobalClick);
+  }, []);
+
+  const handleTabContextMenu = (e, tabId) => {
+    e.preventDefault();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      tabId
+    });
+  };
+
+  const toggleTabPin = (id) => {
+    setOpenTabs(prev => prev.map(t => t.id === id ? { ...t, pinned: !t.pinned } : t));
+  };
+
+  const closeOtherTabs = (id) => {
+    const targetTab = openTabs.find(t => t.id === id);
+    if (!targetTab) return;
+    const newTabs = openTabs.filter(t => t.id === id || t.pinned);
+    setOpenTabs(newTabs);
+    if (!newTabs.some(t => t.id === activeTabId)) {
+      setActiveTabId(id);
+    }
+  };
+
+  const closeAllTabs = () => {
+    const newTabs = openTabs.filter(t => t.pinned);
+    setOpenTabs(newTabs);
+    if (!newTabs.some(t => t.id === activeTabId)) {
+      if (newTabs.length > 0) {
+        setActiveTabId(newTabs[0].id);
+      }
+    }
+  };
+
+  useEffect(() => {
+    sessionStorage.setItem('bi_open_tabs', JSON.stringify(openTabs));
+  }, [openTabs]);
+
+  useEffect(() => {
+    sessionStorage.setItem('bi_active_tab', activeTabId);
+  }, [activeTabId]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      sessionStorage.removeItem('bi_open_tabs');
+      sessionStorage.removeItem('bi_active_tab');
+      setOpenTabs([{ id: 'home', label: 'Home', icon: 'fa-house', pinned: true }]);
+      setActiveTabId('home');
+      setFavorites([]);
+      setEditFavorites(false);
+    } else {
+      try {
+        const config = typeof currentUser.dashboard_config === 'string'
+          ? JSON.parse(currentUser.dashboard_config)
+          : (currentUser.dashboard_config || {});
+        setFavorites(config.favorites || []);
+      } catch {
+        setFavorites([]);
+      }
+    }
+  }, [currentUser]);
+
+  const openTab = (id, label, icon, type = 'module', data = null) => {
+    const existing = openTabs.find(t => t.id === id);
+    if (existing) {
+      setActiveTabId(id);
+      return;
+    }
+    if (openTabs.length >= 10) {
+      window.showToast ? window.showToast("Please close a tab first (max 10 open)") : alert("Please close a tab first (max 10 open)");
+      return;
+    }
+    const newTab = { id, label, icon, type, data };
+    setOpenTabs([...openTabs, newTab]);
+    setActiveTabId(id);
+  };
+
+  const closeTab = (id) => {
+    const tab = openTabs.find(t => t.id === id);
+    if (!tab || tab.pinned) return;
+
+    const newTabs = openTabs.filter(t => t.id !== id);
+    setOpenTabs(newTabs);
+
+    if (activeTabId === id) {
+      const idx = openTabs.findIndex(t => t.id === id);
+      const nextActive = newTabs[idx - 1] || newTabs[idx] || newTabs[0];
+      if (nextActive) {
+        setActiveTabId(nextActive.id);
+      }
+    }
+  };
+
+  const toggleFavorite = async (tabId) => {
+    const newFavs = favorites.includes(tabId)
+      ? favorites.filter(id => id !== tabId)
+      : [...favorites, tabId];
+    
+    setFavorites(newFavs);
+
+    try {
+      let currentConfig = {};
+      try {
+        currentConfig = typeof currentUser.dashboard_config === 'string'
+          ? JSON.parse(currentUser.dashboard_config)
+          : (currentUser.dashboard_config || {});
+      } catch {}
+      currentConfig.favorites = newFavs;
+
+      const res = await apiFetch('/api/users/me/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dashboard_config: currentConfig })
+      });
+      if (res.ok) {
+        currentUser.dashboard_config = JSON.stringify(currentConfig);
+      }
+    } catch (e) {
+      console.error("Failed to save favorites:", e);
+    }
+  };
+
+  const getTabLabel = (id) => {
+    switch (id) {
+      case 'home': return 'Home';
+      case 'dashboard': return 'Dashboard';
+      case 'board': return 'Pivot Board';
+      case 'my_tasks': return 'My Tasks';
+      case 'team_pool': return 'Team Pool';
+      case 'team_dashboard': return 'Team Dash';
+      case 'approvals': return 'Approvals';
+      case 'analytics': return 'Analytics';
+      case 'monitoring': return 'Monitoring';
+      case 'phase_submit': return 'Projects';
+      case 'comms': return 'Comms';
+      case 'audit': return 'Audit';
+      case 'manage': return 'Manage';
+      case 'new-project': return 'New Project';
+      case 'admin': return 'Admin';
+      default: return id;
+    }
+  };
+
+  const getTabIcon = (id) => {
+    switch (id) {
+      case 'home': return 'fa-house';
+      case 'dashboard': return 'fa-gauge-high';
+      case 'board': return 'fa-layer-group';
+      case 'my_tasks': return 'fa-list-check';
+      case 'team_pool': return 'fa-inbox';
+      case 'team_dashboard': return 'fa-people-group';
+      case 'approvals': return 'fa-check-to-slot';
+      case 'analytics': return 'fa-chart-pie';
+      case 'monitoring': return 'fa-stopwatch';
+      case 'phase_submit': return 'fa-code-branch';
+      case 'comms': return 'fa-comments';
+      case 'audit': return 'fa-file-shield';
+      case 'manage': return 'fa-server';
+      case 'new-project': return 'fa-plus';
+      case 'admin': return 'fa-shield';
+      default: return 'fa-circle';
+    }
+  };
+
+  const getProjectTitle = (projectId) => {
+    const proj = projectsList.find(p => p.id === projectId);
+    return proj ? proj.title : projectId;
+  };
   
-  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
+  useEffect(() => {
+    window.openTaskDetail = (id) => {
+      setGlobalSelectedTaskId(Number(id));
+    };
+    window.openProjectDetail = (id) => {
+      openTab('project:' + id, getProjectTitle(id), 'fa-folder', 'project', id);
+    };
+    window.openProjectDocument = (id) => {
+      openTab('project_doc:' + id, '📄 Doc: ' + getProjectTitle(id), 'fa-file-lines', 'project_document', id);
+    };
+    window.navigateToTab = (tab) => {
+      openTab(tab, getTabLabel(tab), getTabIcon(tab));
+    };
+    window.showToast = (msg) => {
+      setToastMsg(msg);
+      setTimeout(() => setToastMsg(null), 3000);
+    };
+    return () => {
+      delete window.openTaskDetail;
+      delete window.openProjectDetail;
+      delete window.openProjectDocument;
+      delete window.navigateToTab;
+      delete window.showToast;
+    };
+  }, [tasksList, projectsList, openTabs]);
+  
+  const [theme, setTheme] = useState(() => {
+    const saved = localStorage.getItem('theme');
+    if (saved === 'high-contrast') return 'light';
+    if (saved) return saved;
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+      return 'light';
+    }
+    return 'dark';
+  });
+  const [highContrast, setHighContrast] = useState(() => {
+    const savedTheme = localStorage.getItem('theme');
+    const savedContrast = localStorage.getItem('high-contrast');
+    if (savedTheme === 'high-contrast') return true;
+    return savedContrast === 'true';
+  });
+  const [appName, setAppName] = useState('BI Project Manager');
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('theme', theme);
   }, [theme]);
-  const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark');
 
-  const [tasksList, setTasksList] = useState([]);
+  useEffect(() => {
+    document.documentElement.setAttribute('data-contrast', highContrast ? 'true' : 'false');
+    localStorage.setItem('high-contrast', highContrast ? 'true' : 'false');
+  }, [highContrast]);
 
-  const fetchProjects = async () => { const d = await (await apiFetch('/api/projects')).json(); setProjectsList(Array.isArray(d) ? d : []); };
-  const fetchUsers = async () => { const d = await (await apiFetch('/api/users')).json(); setUsersList(Array.isArray(d) ? d : []); };
-  const fetchTasks = async () => {
-    if (!currentUser) return;
-    // Leaders and admins see all tasks; members see only their team
-    const url = (currentUser.role === 'admin' || currentUser.role === 'leader')
-      ? '/api/tasks?role=admin'
-      : `/api/tasks?role=member&team=${encodeURIComponent(currentUser.team || '')}`;
-    const d = await (await apiFetch(url)).json();
-    if (Array.isArray(d)) setTasksList(d);
-    else setTasksList([]);
+  useEffect(() => {
+    apiFetch('/api/config/app-name')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data && data.app_name) {
+          setAppName(data.app_name);
+          document.title = data.app_name + " - Dashboard";
+        }
+      })
+      .catch(() => {});
+    
+    window.updateGlobalAppName = (newName) => {
+      setAppName(newName);
+      document.title = newName + " - Dashboard";
+    };
+    
+    return () => {
+      delete window.updateGlobalAppName;
+    };
+  }, []);
+
+  const toggleTheme = () => {
+    setTheme(prev => prev === 'dark' ? 'light' : 'dark');
   };
 
-  const handleLogin = (user) => { localStorage.setItem('currentUser', JSON.stringify(user)); setCurrentUser(user); };
-  const handleLogout = () => { localStorage.removeItem('currentUser'); setCurrentUser(null); };
+  const toggleContrast = () => {
+    setHighContrast(prev => !prev);
+  };
 
-  useEffect(() => { if (currentUser) { fetchProjects(); fetchTasks(); if (currentUser.role === 'admin' || currentUser.role === 'leader') fetchUsers(); } }, [currentUser]);
+  const fetchProjects = async () => { try { const res = await apiFetch('/api/projects'); if(res.ok) setProjectsList(await res.json()); } catch {} };
+  const fetchUsers = async () => { try { const res = await apiFetch('/api/users'); if(res.ok) setUsersList(await res.json()); } catch {} };
+  const fetchTasks = async () => {
+    if (!currentUser) return;
+    try {
+      const res = await apiFetch('/api/tasks');
+      if (res.ok) setTasksList(await res.json());
+    } catch {}
+  };
+  const fetchAll = async () => { await Promise.all([fetchProjects(), fetchTasks(), fetchUsers()]); };
+
+  useEffect(() => {
+    apiFetch('/api/me').then(res => {
+      if (res.ok) return res.json();
+      throw new Error();
+    }).then(async data => {
+      await loadConfig();
+      setCurrentUser(data);
+      setAuthChecked(true);
+    }).catch(() => setAuthChecked(true));
+  }, []);
+
+  const handleLogin = async (user) => { 
+    await loadConfig();
+    setCurrentUser(user); 
+  };
+  
+  const handleLogout = async () => { 
+    await apiFetch('/api/logout', { method: 'POST' });
+    setCurrentUser(null); 
+  };
+
+  useEffect(() => { if (currentUser) { fetchAll(); } }, [currentUser]);
+  useSmartPoll(() => { if (currentUser) fetchAll(); }, 30000, 120000, [currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+
+    let ws;
+    let reconnectTimeout;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+    const connect = () => {
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        console.log('WebSocket state sync established.');
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          console.log('WebSocket update received:', payload);
+          fetchAll();
+        } catch (e) {
+          console.error('Failed to parse WebSocket packet:', e);
+        }
+      };
+
+      ws.onclose = () => {
+        console.warn('WebSocket connection lost. Reconnecting in 3s...');
+        reconnectTimeout = setTimeout(connect, 3000);
+      };
+
+      ws.onerror = (err) => {
+        console.error('WebSocket error details:', err);
+        ws.close();
+      };
+    };
+
+    connect();
+
+    return () => {
+      if (ws) ws.close();
+      clearTimeout(reconnectTimeout);
+    };
+  }, [currentUser]);
+
   useEffect(() => {
     const fn = (e) => { if (e.key === 'Escape') setSelectedProjectId(null); };
     window.addEventListener('keydown', fn);
     return () => window.removeEventListener('keydown', fn);
   }, []);
 
-  const selectedProject = selectedProjectId ? projectsList.find(p => p.id === selectedProjectId) : null;
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (skipClose.current) {
+        skipClose.current = false;
+        return;
+      }
+      if (sidebarPinned && sidebarRef.current && !sidebarRef.current.contains(e.target)) {
+        setSidebarPinned(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [sidebarPinned]);
 
+  const selectedProject = selectedProjectId ? projectsList.find(p => p.id === selectedProjectId) : null;
+  const globalSelectedTask = globalSelectedTaskId ? tasksList.find(t => t.id === globalSelectedTaskId) : null;
+
+  if (!authChecked) return html`<div style="padding:2rem;text-align:center;">Loading...</div>`;
   if (!currentUser) return html`<${LoginScreen} onLogin=${handleLogin} />`;
 
-  const isMember = currentUser.role === 'member';
-  const isLeader = currentUser.role === 'leader';
-  const isAdmin = currentUser.role === 'admin';
-  const canManageTasks = isLeader || isAdmin;
+  const canReadProjects = hasPermission(currentUser, 'project.read') || hasPermission(currentUser, 'analytics.read_all');
+  const canReadAnalytics = hasPermission(currentUser, 'analytics.read_team') || hasPermission(currentUser, 'analytics.read_all');
+  const canApproveTasks = hasPermission(currentUser, 'task.approve') || hasPermission(currentUser, 'task.review_accept') || hasPermission(currentUser, 'task.review_finish');
+  const canReadComms = hasPermission(currentUser, 'messages.read');
+  const canReadAudit = hasPermission(currentUser, 'audit.read');
+  const canAccessAdminPanel = hasPermission(currentUser, 'admin.panel');
+  const canCreateTask = hasPermission(currentUser, 'task.create');
+  const canSubmitPhase = hasPermission(currentUser, 'project.phase_submit');
 
-  const nb = (tab) => `btn ${activeTab === tab ? 'active' : ''}`;
+  const getSidebarGroups = () => {
+    const groups = [];
+    if (canReadProjects) {
+      groups.push({
+        heading: 'Projects',
+        items: [
+          { id: 'home', label: 'Home', icon: 'fa-house' },
+          { id: 'dashboard', label: 'Dashboard', icon: 'fa-gauge-high' },
+          { id: 'board', label: 'Pivot Board', icon: 'fa-layer-group' }
+        ]
+      });
+    }
+    if (hasPermission(currentUser, 'task.read')) {
+      const items = [
+        { id: 'my_tasks', label: 'My Tasks', icon: 'fa-list-check' },
+        { id: 'team_pool', label: 'Team Pool', icon: 'fa-inbox' }
+      ];
+      if (canReadAnalytics) {
+        items.push({ id: 'team_dashboard', label: 'Team Dash', icon: 'fa-people-group' });
+      }
+      if (canApproveTasks) {
+        items.push({ id: 'approvals', label: 'Approvals', icon: 'fa-check-to-slot' });
+      }
+      groups.push({ heading: 'Tasks', items });
+    }
+    if (canReadAnalytics || hasPermission(currentUser, 'analytics.read_own')) {
+      const items = [
+        { id: 'analytics', label: 'Analytics', icon: 'fa-chart-pie' },
+        { id: 'monitoring', label: 'Monitoring', icon: 'fa-stopwatch' }
+      ];
+      if (canSubmitPhase) {
+        items.push({ id: 'phase_submit', label: 'Projects', icon: 'fa-code-branch' });
+      }
+      groups.push({ heading: 'Analytics', items });
+    }
+    const sysItems = [];
+    if (canReadComms) sysItems.push({ id: 'comms', label: 'Comms', icon: 'fa-comments' });
+    if (canReadAudit) sysItems.push({ id: 'audit', label: 'Audit', icon: 'fa-file-shield' });
+    if (hasPermission(currentUser, 'project.update')) sysItems.push({ id: 'manage', label: 'Manage', icon: 'fa-server' });
+    if (hasPermission(currentUser, 'project.create')) sysItems.push({ id: 'new-project', label: 'New Project', icon: 'fa-plus' });
+    if (canAccessAdminPanel) sysItems.push({ id: 'admin', label: 'Admin', icon: 'fa-shield' });
+    if (sysItems.length > 0) {
+      groups.push({ heading: 'System', items: sysItems });
+    }
+    return groups;
+  };
+
+  const favoriteItems = useMemo(() => {
+    const allItems = getSidebarGroups().flatMap(g => g.items);
+    return favorites.map(favId => allItems.find(item => item.id === favId)).filter(Boolean);
+  }, [favorites, currentUser]);
+
+  const getTabContent = (tab) => {
+    const id = tab.id;
+    const type = tab.type;
+    
+    if (type === 'project') {
+      const proj = projectsList.find(p => p.id === tab.data);
+      return html`<${ProjectDetailInline} project=${proj} currentUser=${currentUser} tasks=${tasksList} onClose=${() => closeTab(id)} onUpdate=${fetchProjects} />`;
+    }
+    
+    if (type === 'project_document') {
+      return html`<${ProjectDocumentView} projectId=${tab.data} currentUser=${currentUser} onClose=${() => closeTab(id)} />`;
+    }
+    
+    switch (id) {
+      case 'home':
+        return html`<${RoleDashboard} currentUser=${currentUser} tasks=${tasksList} projects=${projectsList} users=${usersList} setActiveTab=${(tabName) => openTab(tabName, getTabLabel(tabName), getTabIcon(tabName))} openPhaseModal=${projectId => { setPreselectedPhaseProject(projectId || ''); setShowPhaseModal(true); }} />`;
+      case 'dashboard':
+        return html`<${Dashboard} projects=${projectsList} tasks=${tasksList} currentUser=${currentUser} />`;
+      case 'board':
+        return html`<${KanbanBoard} projects=${projectsList} tasks=${tasksList} viewMode=${boardView} setViewMode=${setBoardView} onProjectClick=${p => openTab('project:' + p.id, p.title, 'fa-folder', 'project', p.id)} onUpdate=${fetchTasks} currentUser=${currentUser} />`;
+      case 'audit':
+        return html`<${AuditLogTab} />`;
+      case 'manage':
+        return html`<${ProjectsManagementTab} projects=${projectsList} fetchProjects=${fetchProjects} setEditId=${projectId => openTab('project:' + projectId, getProjectTitle(projectId), 'fa-folder', 'project', projectId)} currentUser=${currentUser} />`;
+      case 'new-project':
+        return html`<${CreateProjectTab} onSave=${() => { fetchProjects(); closeTab('new-project'); openTab('dashboard', 'Dashboard', 'fa-gauge-high'); }} onCancel=${() => closeTab('new-project')} currentUser=${currentUser} />`;
+      case 'admin':
+        return html`<${AdminPanel} users=${usersList} fetchUsers=${fetchUsers} currentUser=${currentUser} />`;
+      case 'my_tasks':
+        return html`<${MyTasksView} tasks=${tasksList} projects=${projectsList} users=${usersList} fetchTasks=${fetchTasks} currentUser=${currentUser} />`;
+      case 'team_pool':
+        return html`<${TeamPoolView} tasks=${tasksList} projects=${projectsList} users=${usersList} fetchTasks=${fetchTasks} currentUser=${currentUser} />`;
+      case 'team_dashboard':
+        return html`<${TeamDashboardView} tasks=${tasksList} projects=${projectsList} users=${usersList} fetchTasks=${fetchTasks} currentUser=${currentUser} />`;
+      case 'approvals':
+        return html`<${ApprovalsView} tasks=${tasksList} projects=${projectsList} fetchTasks=${fetchTasks} currentUser=${currentUser} />`;
+      case 'monitoring':
+        return html`<${TaskMonitoringTab} tasks=${tasksList} projects=${projectsList} currentUser=${currentUser} />`;
+      case 'phase_submit':
+        return html`<${PhaseSubmissionTab} projects=${projectsList} tasks=${tasksList} currentUser=${currentUser} openPhaseModal=${projectId => { setPreselectedPhaseProject(projectId || ''); setShowPhaseModal(true); }} />`;
+      case 'analytics':
+        return html`<${ProjectAnalyticsTab} projects=${projectsList} tasks=${tasksList} currentUser=${currentUser} />`;
+      case 'comms':
+        return html`<${CommunicationsTab} currentUser=${currentUser} tasks=${tasksList} projects=${projectsList} />`;
+      default:
+        return html`<div style="padding:2rem;">Tab content not found: ${id}</div>`;
+    }
+  };
+
+  const isExpanded = sidebarPinned;
 
   return html`
-    <div>
-      <nav class="navbar">
-        <div class="brand" style="margin-right:1.5rem;flex-shrink:0;">
-          <i class="fa-solid fa-chart-network"></i> BI Project Manager
-        </div>
-
-        <div class="nav-links">
-          <!-- Projects -->
-          <span class="nav-group-label">Projects</span>
-          <button class=${nb('dashboard')} onClick=${() => setActiveTab('dashboard')}><i class="fa-solid fa-gauge-high"></i> Dashboard</button>
-          <button class=${nb('board')} onClick=${() => setActiveTab('board')}><i class="fa-solid fa-layer-group"></i> Pivot Board</button>
-
-          <div class="nav-group-sep"></div>
-
-          <!-- Tasks — available to all roles -->
-          <span class="nav-group-label">Tasks</span>
-          <button class=${nb('my_tasks')} onClick=${() => setActiveTab('my_tasks')}><i class="fa-solid fa-list-check"></i> My Tasks</button>
-          <button class=${nb('team_pool')} onClick=${() => setActiveTab('team_pool')}><i class="fa-solid fa-inbox"></i> Team Pool</button>
-
-          ${canManageTasks && html`
-            <button class=${nb('team_dashboard')} onClick=${() => setActiveTab('team_dashboard')}><i class="fa-solid fa-people-group"></i> Team Dash</button>
-            <button class=${nb('approvals')} onClick=${() => setActiveTab('approvals')}><i class="fa-solid fa-check-to-slot"></i> Approvals</button>
-          `}
-
-          <div class="nav-group-sep"></div>
-
-          <!-- Analytics — visible to all, interactive for leaders/admins -->
-          <span class="nav-group-label">Analytics</span>
-          <button class=${nb('analytics')} onClick=${() => setActiveTab('analytics')}><i class="fa-solid fa-chart-pie"></i> Analytics</button>
-          <button class=${nb('monitoring')} onClick=${() => setActiveTab('monitoring')}><i class="fa-solid fa-stopwatch"></i> Monitoring</button>
-          ${canManageTasks && html`
-            <button class=${nb('phase_submit')} style="color:var(--accent-purple);" onClick=${() => setActiveTab('phase_submit')}><i class="fa-solid fa-code-branch"></i> Projects</button>
-          `}
-
-          <div class="nav-group-sep"></div>
-
-          <!-- System -->
-          <span class="nav-group-label">System</span>
-          <button class=${nb('comms')} onClick=${() => setActiveTab('comms')}><i class="fa-solid fa-comments"></i> Comms</button>
-          ${isAdmin && html`
-            <button class=${nb('audit')} style="color:var(--accent-purple);" onClick=${() => setActiveTab('audit')}><i class="fa-solid fa-file-shield"></i> Audit</button>
-            <button class=${nb('manage')} style="color:var(--accent-orange);" onClick=${() => setActiveTab('manage')}><i class="fa-solid fa-server"></i> Manage</button>
-            <button class=${nb('new-project')} style="color:var(--accent-green);" onClick=${() => setActiveTab('new-project')}><i class="fa-solid fa-plus"></i> New</button>
-            <button class=${nb('admin')} onClick=${() => setActiveTab('admin')}><i class="fa-solid fa-shield"></i> Admin</button>
-          `}
-        </div>
-
-        <div style="display:flex;align-items:center;margin-left:1rem;gap:0.5rem;flex-shrink:0;">
-          <${NotificationBell} currentUser=${currentUser} />
-          <div style="font-size:0.82rem;color:var(--text-secondary);text-align:right;">
-            <div><strong>${currentUser.username}</strong></div>
-            <div style="font-size:0.68rem;text-transform:uppercase;opacity:0.7;">${currentUser.role}</div>
+    <div class="app-shell">
+      <aside class="sidebar ${isExpanded ? 'expanded' : ''}" ref=${sidebarRef}>
+        <!-- Hamburger Toggle Button at absolute top-left -->
+        <button class="sidebar-toggle-btn" 
+          onClick=${() => { skipClose.current = true; setSidebarPinned(!sidebarPinned); }} 
+          title=${sidebarPinned ? "Unpin Menu" : "Pin Menu"}>
+          <i class="fa-solid fa-bars"></i>
+        </button>
+        <div class="sidebar-nav">
+          <div class="sidebar-group">
+            <div class="sidebar-group-header" style="display:flex; justify-content:space-between; align-items:center; width:100%; padding-right:0.5rem; gap:0.5rem;">
+              <span>★ Favorites</span>
+              ${isExpanded && html`
+                <button type="button" onClick=${(e) => { e.stopPropagation(); setEditFavorites(!editFavorites); }} 
+                  style="background:transparent; border:none; color:${editFavorites ? 'var(--accent-yellow)' : 'var(--text-secondary)'}; cursor:pointer; font-size:0.85rem; padding:0; display:flex; align-items:center;"
+                  title=${editFavorites ? "Done Editing" : "Edit Favorites"}>
+                  <i class="fa-solid fa-pen-to-square"></i>
+                </button>
+              `}
+            </div>
+            ${favoriteItems.length === 0 
+              ? (isExpanded && html`<div style="font-size:0.72rem;color:var(--text-secondary);padding:0.5rem 1rem;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="No favorites yet">No favorites yet</div>`)
+              : favoriteItems.map(item => html`
+                <div class="sidebar-item ${activeTabId === item.id ? 'active' : ''}" onClick=${() => openTab(item.id, item.label, item.icon)}>
+                  <i class="fa-solid ${item.icon}"></i>
+                  <span class="label">${item.label}</span>
+                  ${!isExpanded && html`<div class="sidebar-tooltip">${item.label}</div>`}
+                  ${editFavorites && html`
+                    <button class="sidebar-pin-btn pinned" onClick=${(e) => { e.stopPropagation(); toggleFavorite(item.id); }}>
+                      <i class="fa-solid fa-star"></i>
+                    </button>
+                  `}
+                </div>
+              `)
+            }
           </div>
-          <button class="btn" onClick=${toggleTheme} title="Toggle Theme">
-            <i class="fa-solid ${theme === 'dark' ? 'fa-sun' : 'fa-moon'}"></i>
-          </button>
-          <button class="btn" onClick=${handleLogout} title="Sign Out"><i class="fa-solid fa-arrow-right-from-bracket"></i></button>
+          
+          <div style="height:1px;background:rgba(255,255,255,0.05);margin:0.5rem 0;"></div>
+          
+          ${getSidebarGroups().map(group => html`
+            <div class="sidebar-group">
+              <div class="sidebar-group-header">
+                <span>${group.heading}</span>
+              </div>
+              ${group.items.map(item => {
+                const isPinned = favorites.includes(item.id);
+                return html`
+                  <div class="sidebar-item ${activeTabId === item.id ? 'active' : ''}" onClick=${() => openTab(item.id, item.label, item.icon)}>
+                    <i class="fa-solid ${item.icon}"></i>
+                    <span class="label">${item.label}</span>
+                    ${!isExpanded && html`<div class="sidebar-tooltip">${item.label}</div>`}
+                    ${isExpanded && (editFavorites || isPinned) && html`
+                      <button class="sidebar-pin-btn ${isPinned ? 'pinned' : ''}" onClick=${(e) => { e.stopPropagation(); toggleFavorite(item.id); }} title=${isPinned ? "Remove from Favorites" : "Add to Favorites"}>
+                        <i class="fa-solid fa-star"></i>
+                      </button>
+                    `}
+                  </div>
+                `;
+              })}
+            </div>
+          `)}
         </div>
-      </nav>
-
-      <main class="main-content">
-        ${activeTab === 'dashboard' && html`<${Dashboard} projects=${projectsList} tasks=${tasksList} />`}
-        ${activeTab === 'board' && html`<${KanbanBoard} projects=${projectsList} tasks=${tasksList} viewMode=${boardView} setViewMode=${setBoardView} onProjectClick=${p => setSelectedProjectId(p.id)} onUpdate=${fetchTasks} />`}
-        ${activeTab === 'audit' && isAdmin && html`<${AuditLogTab} />`}
-        ${activeTab === 'manage' && isAdmin && html`<${ProjectsManagementTab} projects=${projectsList} fetchProjects=${fetchProjects} setEditId=${setSelectedProjectId} />`}
-        ${activeTab === 'new-project' && isAdmin && html`<${CreateProjectTab} onSave=${() => { fetchProjects(); setActiveTab('dashboard'); }} />`}
-        ${activeTab === 'admin' && isAdmin && html`<${AdminPanel} users=${usersList} fetchUsers=${fetchUsers} />`}
-
-        ${activeTab === 'my_tasks' && html`<${MyTasksView} tasks=${tasksList} projects=${projectsList} fetchTasks=${fetchTasks} currentUser=${currentUser} />`}
-        ${activeTab === 'team_pool' && html`<${TeamPoolView} tasks=${tasksList} projects=${projectsList} fetchTasks=${fetchTasks} currentUser=${currentUser} />`}
-        ${activeTab === 'team_dashboard' && canManageTasks && html`<${TeamDashboardView} tasks=${tasksList} projects=${projectsList} users=${usersList} fetchTasks=${fetchTasks} currentUser=${currentUser} />`}
-        ${activeTab === 'approvals' && canManageTasks && html`<${ApprovalsView} tasks=${tasksList} projects=${projectsList} fetchTasks=${fetchTasks} currentUser=${currentUser} />`}
-        ${activeTab === 'monitoring' && html`<${TaskMonitoringTab} tasks=${tasksList} projects=${projectsList} currentUser=${currentUser} />`}
-        ${activeTab === 'phase_submit' && canManageTasks && html`<${PhaseSubmissionTab} projects=${projectsList} tasks=${tasksList} currentUser=${currentUser} fetchProjects=${fetchProjects} />`}
-        ${activeTab === 'analytics' && html`<${ProjectAnalyticsTab} projects=${projectsList} tasks=${tasksList} currentUser=${currentUser} />`}
-        ${activeTab === 'comms' && html`<${CommunicationsTab} currentUser=${currentUser} tasks=${tasksList} projects=${projectsList} />`}
-      </main>
-      <${ProjectModal} project=${selectedProject} currentUser=${currentUser} onClose=${() => setSelectedProjectId(null)} onUpdate=${fetchProjects} />
-      <${CommandPalette} projects=${projectsList} tasks=${tasksList} setActiveTab=${setActiveTab} setSelectedProjectId=${setSelectedProjectId} />
+      </aside>
+      
+      <div class="content-shell">
+        <header class="content-header">
+          <div class="content-header-top">
+            <!-- Brand name outside drawer -->
+            <span style="font-weight:800;font-size:0.98rem;color:var(--text-primary);white-space:nowrap;display:flex;align-items:center;gap:0.4rem;cursor:pointer;margin-right:1rem;" 
+              onClick=${() => openTab('home', 'Home', 'fa-house')}>
+              <i class="fa-solid fa-chart-network" style="color:var(--accent-blue);"></i>
+              ${appName}
+            </span>
+            
+            <div class="user-strip">
+              ${canCreateTask && html`
+                <button class="btn active" style="background:var(--accent-green);font-size:0.78rem;padding:0.35rem 0.75rem;"
+                  onClick=${() => setShowTaskModal(true)} title="New Task (Global)">
+                  <i class="fa-solid fa-plus"></i> Task
+                </button>
+              `}
+              ${canSubmitPhase && html`
+                <button class="btn active" style="background:var(--accent-purple);font-size:0.78rem;padding:0.35rem 0.75rem;"
+                  onClick=${() => { setPreselectedPhaseProject(''); setShowPhaseModal(true); }} title="Submit Phase">
+                  <i class="fa-solid fa-code-branch"></i> Phase
+                </button>
+              `}
+              <button class="btn" style="padding:0.35rem 0.6rem;background:transparent;border:1px solid rgba(255,255,255,0.15);"
+                onClick=${toggleTheme} title=${theme === 'dark' ? "Switch to Light Theme" : "Switch to Dark Theme"}>
+                <i class="fa-solid ${theme === 'dark' ? 'fa-moon' : 'fa-sun'}"></i>
+              </button>
+              <button class="btn ${highContrast ? 'active' : ''}" style="padding:0.35rem 0.6rem;border:1px solid rgba(255,255,255,0.15);${highContrast ? 'background:var(--accent-blue);color:white;' : 'background:transparent;'}"
+                onClick=${toggleContrast} title=${highContrast ? "Disable High Contrast" : "Enable High Contrast (Accessibility)"}>
+                <i class="fa-solid fa-universal-access"></i>
+              </button>
+              <${NotificationBell} currentUser=${currentUser} />
+              <div style="line-height:1.2;font-size:0.82rem;text-align:right;">
+                <div><strong>${currentUser.username}</strong></div>
+                <div style="font-size:0.68rem;text-transform:uppercase;opacity:0.7;">${currentUser.role}</div>
+              </div>
+              <button class="btn" style="padding:0.35rem 0.6rem;background:transparent;border:1px solid rgba(255,255,255,0.15);"
+                onClick=${handleLogout} title="Log Out">
+                <i class="fa-solid fa-right-from-bracket"></i>
+              </button>
+            </div>
+          </div>
+          <div style="display:flex; align-items:flex-end; width:100%;">
+            <div class="tab-bar" style="margin-right:0.5rem;">
+              ${openTabs.map(tab => html`
+                <div class="tab-pill ${activeTabId === tab.id ? 'active' : ''} ${tab.pinned ? 'pinned' : ''}" 
+                  onClick=${() => setActiveTabId(tab.id)} 
+                  onContextMenu=${(e) => handleTabContextMenu(e, tab.id)}
+                  title=${tab.type === 'project' ? `Project: ${tab.label} (ID: ${tab.data})` : tab.label}>
+                  <i class="fa-solid ${tab.icon}" style="font-size:0.75rem;"></i>
+                  <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:110px;">${tab.label}</span>
+                  ${tab.pinned ? html`
+                    <span class="tab-pin-icon" style="margin-left:0.25rem; font-size:0.68rem; opacity:0.8; color: var(--accent-blue);" title="Pinned Tab">
+                      <i class="fa-solid fa-thumbtack"></i>
+                    </span>
+                  ` : html`
+                    <button class="tab-close" onClick=${(e) => { e.stopPropagation(); closeTab(tab.id); }} title="Close Tab">
+                      <i class="fa-solid fa-xmark"></i>
+                    </button>
+                  `}
+                </div>
+              `)}
+            </div>
+            <div style="align-self:center; display:flex; align-items:center; padding:0.25rem 0.75rem; font-size:0.72rem; font-weight:700; color:${openTabs.length >= 9 ? 'var(--accent-pink)' : 'var(--text-secondary)'}; gap:0.25rem; white-space:nowrap; margin-bottom:2px;" title="Open Tabs limit: 10 max">
+              <i class="fa-solid fa-folder-tree"></i>
+              <span>${openTabs.length}/10</span>
+            </div>
+          </div>
+        </header>
+        
+        <main class="content-area">
+          ${openTabs.map(tab => {
+            const isTabActive = activeTabId === tab.id;
+            return html`
+              <div key=${tab.id} style="display:${isTabActive ? 'block' : 'none'};">
+                ${getTabContent(tab)}
+              </div>
+            `;
+          })}
+        </main>
+      </div>
+      
+      <${ProjectModal} project=${selectedProject} currentUser=${currentUser} tasks=${tasksList} onClose=${() => setSelectedProjectId(null)} onUpdate=${fetchProjects} />
       <${AppDialogHost} />
+      
+      <${TaskFocusModal}
+        open=${showTaskModal}
+        onClose=${() => setShowTaskModal(false)}
+        projects=${projectsList}
+        currentUser=${currentUser}
+        editingTask=${null}
+        users=${usersList}
+        onSaved=${fetchTasks}
+      />
+      <${TaskFocusModal}
+        open=${Boolean(globalSelectedTaskId)}
+        onClose=${() => setGlobalSelectedTaskId(null)}
+        projects=${projectsList}
+        currentUser=${currentUser}
+        editingTask=${globalSelectedTask}
+        users=${usersList}
+        onSaved=${async () => { await fetchTasks(); setGlobalSelectedTaskId(null); }}
+      />
+      <${PhaseSubmitModal}
+        open=${showPhaseModal}
+        onClose=${() => setShowPhaseModal(false)}
+        projects=${projectsList}
+        tasks=${tasksList}
+        currentUser=${currentUser}
+        onSaved=${async () => {
+          await fetchProjects();
+          if (activeTabId === 'phase_submit') {
+            window.showToast ? window.showToast("Phase submitted successfully! Closing tab...") : null;
+            setTimeout(() => closeTab('phase_submit'), 3000);
+          }
+        }}
+        preselectedProjectId=${preselectedPhaseProject}
+      />
+      ${contextMenu && html`
+        <div class="tab-context-menu" style=${`left: ${contextMenu.x}px; top: ${contextMenu.y}px;`}>
+          <button class="tab-context-menu-item" onClick=${() => { toggleTabPin(contextMenu.tabId); setContextMenu(null); }}>
+            <i class="fa-solid fa-thumbtack"></i>
+            <span>${openTabs.find(t => t.id === contextMenu.tabId)?.pinned ? 'Unpin Tab' : 'Pin Tab'}</span>
+          </button>
+          <button class="tab-context-menu-item" disabled=${openTabs.find(t => t.id === contextMenu.tabId)?.pinned} onClick=${() => { closeTab(contextMenu.tabId); setContextMenu(null); }}>
+            <i class="fa-solid fa-xmark"></i>
+            <span>Close Tab</span>
+          </button>
+          <button class="tab-context-menu-item" onClick=${() => { closeOtherTabs(contextMenu.tabId); setContextMenu(null); }}>
+            <i class="fa-solid fa-clone"></i>
+            <span>Close Others</span>
+          </button>
+          <button class="tab-context-menu-item" onClick=${() => { closeAllTabs(); setContextMenu(null); }}>
+            <i class="fa-solid fa-square-xmark"></i>
+            <span>Close All Tabs</span>
+          </button>
+        </div>
+      `}
+      ${toastMsg && html`
+        <div class="premium-toast">
+          <i class="fa-solid fa-circle-check" style="color:var(--accent-green);"></i>
+          <span>${toastMsg}</span>
+        </div>
+      `}
     </div>
   `;
 };

@@ -2,7 +2,6 @@ import { h } from 'https://esm.sh/preact';
 import { useState, useEffect } from 'https://esm.sh/preact/hooks';
 import htm from 'https://esm.sh/htm';
 import { apiFetch } from '../utils/core.js';
-import { PHASES, TEAMS } from '../utils/core.js';
 const html = htm.bind(h);
 
 export const NotificationBell = ({ currentUser }) => {
@@ -19,7 +18,7 @@ export const NotificationBell = ({ currentUser }) => {
 
   useEffect(() => {
     fetchNotifs();
-    const interval = setInterval(fetchNotifs, 30000); // 30s polling
+    const interval = setInterval(fetchNotifs, 10000); // 10s polling
     return () => clearInterval(interval);
   }, [currentUser]);
 

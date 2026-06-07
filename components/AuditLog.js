@@ -1,8 +1,8 @@
 import { apiFetch } from '../utils/core.js';
-import { PHASES, TEAMS } from '../utils/core.js';
+// AuditLog.js — no configStore functions are required here
 
 import { h } from 'https://esm.sh/preact';
-import { useState, useEffect, useMemo, useRef } from 'https://esm.sh/preact/hooks';
+import { useState, useEffect } from 'https://esm.sh/preact/hooks';
 import htm from 'https://esm.sh/htm';
 export const html = htm.bind(h);
 

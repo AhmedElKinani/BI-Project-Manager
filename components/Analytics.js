@@ -1,29 +1,36 @@
-import { formatDuration, getTeamClass, getHealthStatus, getPhaseClass } from '../utils/core.js';
-import { PHASES, TEAMS } from '../utils/core.js';
+import { formatDuration, getTeamClass, getHealthStatus, getPhaseClass, hasPermission } from '../utils/core.js';
+import { getPhases, getTeams } from '../utils/configStore.js';
 import { TaskDetailModal, TASK_STATUSES, STATUS_META } from './TaskManagement.js';
+import { DeepDiveDrawer } from './DeepDiveDrawer.js';
 
 import { h } from 'https://esm.sh/preact';
-import { useState, useEffect, useMemo, useRef } from 'https://esm.sh/preact/hooks';
+import { useState, useEffect } from 'https://esm.sh/preact/hooks';
 import htm from 'https://esm.sh/htm';
 export const html = htm.bind(h);
 
 
 export const TaskMonitoringTab = ({ tasks, projects, currentUser }) => {
-  const isAdmin = currentUser.role === 'admin';
-  const isLeader = currentUser.role === 'leader';
+  const hasReadAll = hasPermission(currentUser, 'project.read_all') || hasPermission(currentUser, 'analytics.read_all') || hasPermission(currentUser, 'admin.panel');
+  const hasReadTeam = hasPermission(currentUser, 'project.read_team') || hasPermission(currentUser, 'analytics.read_team');
+  const myTeams = currentUser ? (currentUser.teams || (currentUser.team ? [currentUser.team] : [])) : [];
 
   // Role-scoped task set
   const scopedTasks = tasks.filter(t => {
-    if (isAdmin) return true;
-    if (isLeader) return t.team === currentUser.team;
+    if (hasReadAll) return true;
+    if (hasReadTeam) return myTeams.includes(t.team);
     return t.assignee === currentUser.username;
   });
+
+  const isAdmin = hasReadAll;
+  const isLeader = hasReadTeam;
 
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterProject, setFilterProject] = useState('all');
   const [filterPhase, setFilterPhase] = useState('all');
   const [filterTeam, setFilterTeam] = useState('all');
   const [selectedTask, setSelectedTask] = useState(null);
+  const [deepDiveItem, setDeepDiveItem] = useState(null);
+  const [deepDiveType, setDeepDiveType] = useState('task');
 
   const filtered = scopedTasks.filter(t => {
     if (filterStatus !== 'all' && t.status !== filterStatus) return false;
@@ -112,12 +119,12 @@ export const TaskMonitoringTab = ({ tasks, projects, currentUser }) => {
         </select>
         <select class="form-select" style="font-size:0.82rem;" value=${filterPhase} onChange=${e => setFilterPhase(e.target.value)}>
           <option value="all">All Phases</option>
-          ${PHASES.map(p => html`<option value=${p}>${p}</option>`)}
+          ${getPhases().map(p => html`<option value=${p}>${p}</option>`)}
         </select>
         ${(isAdmin || isLeader) && html`
           <select class="form-select" style="font-size:0.82rem;" value=${filterTeam} onChange=${e => setFilterTeam(e.target.value)}>
             <option value="all">All Teams</option>
-            ${TEAMS.map(t => html`<option value=${t}>${t}</option>`)}
+            ${getTeams().map(t => html`<option value=${t}>${t}</option>`)}
           </select>
         `}
         ${(filterStatus !== 'all' || filterProject !== 'all' || filterPhase !== 'all' || filterTeam !== 'all') && html`
@@ -153,7 +160,8 @@ export const TaskMonitoringTab = ({ tasks, projects, currentUser }) => {
                 const tlcClass = tlc.hours === null ? '' : tlc.hours > 336 ? 'sla-breach' : tlc.hours > 168 ? 'sla-warn' : 'sla-good';
                 const isOverdue = t.due_date && t.status !== 'done' && new Date(t.due_date) < new Date();
                 return html`
-                  <tr class="accordion-row" style="border-bottom:1px solid var(--border-color);" onClick=${() => setSelectedTask(t)}>
+                  <tr class="accordion-row" style="border-bottom:1px solid var(--border-color);"
+                    onClick=${() => { setDeepDiveItem(t); setDeepDiveType('task'); }}>
                     <td style="padding:0.75rem 1rem;">
                       <div style="font-weight:600;">${t.title}</div>
                       <div style="font-size:0.7rem;margin-top:0.2rem;"><span class="tag ${getPhaseClass(t.crisp_dm_phase)}" style="font-size:0.62rem;">${t.crisp_dm_phase}</span></div>
@@ -178,7 +186,7 @@ export const TaskMonitoringTab = ({ tasks, projects, currentUser }) => {
         </table>
       </div>
 
-      ${selectedTask && html`<${TaskDetailModal} task=${selectedTask} projects=${projects||[]} currentUser=${currentUser} fetchTasks=${() => {}} onClose=${() => setSelectedTask(null)} />`}
+      ${deepDiveItem && html`<${DeepDiveDrawer} item=${deepDiveItem} type=${deepDiveType} tasks=${tasks} projects=${projects} onClose=${() => setDeepDiveItem(null)} />`}
     </div>
   `;
 };
@@ -189,13 +197,15 @@ export const ProjectAnalyticsTab = ({ projects, tasks, currentUser }) => {
   const [openProject, setOpenProject] = useState(null);
   const [openPhase, setOpenPhase] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
+  const [deepDiveItem, setDeepDiveItem] = useState(null);
+  const [deepDiveType, setDeepDiveType] = useState('project');
   const [taskStatusFilter, setTaskStatusFilter] = useState('all');
   const [taskProjectFilter, setTaskProjectFilter] = useState('all');
 
   const getPhaseProgress = (p) => {
     if (p.phase === 'Deployed and in Use') return 100;
-    const idx = PHASES.indexOf(p.phase);
-    return idx === -1 ? 0 : Math.round(((idx + 1) / PHASES.length) * 100);
+    const idx = getPhases().indexOf(p.phase);
+    return idx === -1 ? 0 : Math.round(((idx + 1) / getPhases().length) * 100);
   };
 
   const avgProgress = projects.length
@@ -211,7 +221,7 @@ export const ProjectAnalyticsTab = ({ projects, tasks, currentUser }) => {
         </div>
       </div>
 
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.5rem;">
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:1rem;margin-bottom:1.5rem;">
         <div class="metric-card" style="text-align:center;padding:1.25rem;">
           <div style="font-size:2.2rem;font-weight:800;background:linear-gradient(135deg,var(--accent-blue),var(--accent-purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">${projects.length}</div>
           <div style="font-size:0.72rem;color:var(--text-secondary);text-transform:uppercase;margin-top:0.25rem;">Projects</div>
@@ -228,13 +238,24 @@ export const ProjectAnalyticsTab = ({ projects, tasks, currentUser }) => {
           <div style="font-size:2.2rem;font-weight:800;color:var(--accent-blue);">${avgProgress}%</div>
           <div style="font-size:0.72rem;color:var(--text-secondary);text-transform:uppercase;margin-top:0.25rem;">Avg Phase Progress</div>
         </div>
+        <div class="metric-card" style="text-align:center;padding:1.25rem;">
+          <div style="font-size:1.1rem;font-weight:800;color:var(--accent-orange);">
+            ${(() => {
+              const counts = {};
+              tasks.filter(t => t.status !== 'done').forEach(t => { counts[t.crisp_dm_phase] = (counts[t.crisp_dm_phase] || 0) + 1; });
+              const top = Object.entries(counts).sort((a,b) => b[1] - a[1])[0];
+              return top ? top[0].split(' ')[0] : 'None';
+            })()}
+          </div>
+          <div style="font-size:0.72rem;color:var(--text-secondary);text-transform:uppercase;margin-top:0.25rem;">Top Bottleneck Phase</div>
+        </div>
       </div>
 
       <div style="display:flex;flex-direction:column;gap:0.75rem;">
         ${projects.map(p => {
           const isOpen = openProject === p.id;
           const prog = getPhaseProgress(p);
-          const health = getHealthStatus(p);
+          const health = getHealthStatus(p, tasks);
           const projTasks = tasks.filter(t => t.project_id === p.id);
 
           return html`
@@ -252,6 +273,10 @@ export const ProjectAnalyticsTab = ({ projects, tasks, currentUser }) => {
                     ${p.blockers && p.blockers.length > 0 && html`<i class="fa-solid fa-triangle-exclamation" style="color:var(--accent-orange);font-size:0.8rem;" title="Has blockers"></i>`}
                   </div>
                 </div>
+                <button style="background:transparent;border:1px solid var(--border-color);border-radius:6px;color:var(--accent-blue);font-size:0.72rem;padding:0.25rem 0.6rem;cursor:pointer;"
+                  onClick=${e => { e.stopPropagation(); setDeepDiveItem(p); setDeepDiveType('project'); }}>
+                  <i class="fa-solid fa-up-right-from-square" style="margin-right:0.25rem;"></i>Deep Dive
+                </button>
                 <div style="text-align:right;min-width:160px;">
                   <div style="font-size:0.7rem;color:${health.color};font-weight:600;margin-bottom:0.3rem;">${health.label}</div>
                   <div style="height:5px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;">
@@ -264,7 +289,7 @@ export const ProjectAnalyticsTab = ({ projects, tasks, currentUser }) => {
               ${isOpen && html`
                 <div style="border-top:1px solid var(--border-color);padding:0;">
                   <!-- Phase Breakdown -->
-                  ${PHASES.map(ph => {
+                  ${getPhases().map(ph => {
                     const phTasks = projTasks.filter(t => t.crisp_dm_phase === ph);
                     if (phTasks.length === 0 && p.phase !== ph) return null;
                     const isPhaseOpen = openPhase === p.id + ph;
@@ -369,7 +394,8 @@ export const ProjectAnalyticsTab = ({ projects, tasks, currentUser }) => {
                         const ttr = formatDuration(t.accepted_at, t.resolved_at);
                         const ttrClass = ttr.hours === null ? '' : ttr.hours > 168 ? 'sla-breach' : ttr.hours > 72 ? 'sla-warn' : 'sla-good';
                         return html`
-                          <tr class="accordion-row" style="border-bottom:1px solid var(--border-color);" onClick=${() => setSelectedTask(t)}>
+                          <tr class="accordion-row" style="border-bottom:1px solid var(--border-color);"
+                            onClick=${() => { setDeepDiveItem(t); setDeepDiveType('task'); }}>
                             <td style="padding:0.65rem 1rem;font-weight:600;">${t.title}</td>
                             <td style="font-size:0.78rem;">${proj ? html`<span title=${proj.title}>${t.project_id}</span>` : (t.project_id || html`<span style="color:var(--text-secondary);">—</span>`)}</td>
                             <td><span class="tag ${getPhaseClass(t.crisp_dm_phase)}" style="font-size:0.62rem;">${t.crisp_dm_phase}</span></td>
@@ -388,7 +414,13 @@ export const ProjectAnalyticsTab = ({ projects, tasks, currentUser }) => {
         })()}
       </div>
 
-      ${selectedTask && html`<${TaskDetailModal} task=${selectedTask} projects=${projects} currentUser=${currentUser} fetchTasks=${() => {}} onClose=${() => setSelectedTask(null)} />`}
+      ${deepDiveItem && html`
+        <${DeepDiveDrawer}
+          item=${deepDiveItem} type=${deepDiveType}
+          tasks=${tasks} projects=${projects}
+          onClose=${() => setDeepDiveItem(null)}
+          onTaskClick=${t => { setDeepDiveItem(t); setDeepDiveType('task'); }}
+        />`}
     </div>
   `;
 };

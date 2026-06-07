@@ -46,9 +46,7 @@ cursor-settings.json
 .DS_Store
 Thumbs.db
 
-# Git
-.gitignore
-.gitattributes
+# Git (do NOT gitignore .gitignore itself)
 
 # Misc
 *.tar
@@ -56,6 +54,14 @@ Thumbs.db
 *.gz
 *.tgz
 *.rar
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+server.log
 
 
 # OS files
@@ -76,3 +82,6 @@ migrate_passwords.py
 patch_app_v*.py
 execution_plan*.md
 init_db.sh
+*.db
+test_login.py
+

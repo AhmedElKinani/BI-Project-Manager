@@ -1,17 +1,23 @@
-import { getTeamClass, appPrompt, ProjectBadges, getPhaseClass, logAudit, getInitials, apiFetch } from '../utils/core.js';
-import { PHASES, TEAMS } from '../utils/core.js';
+import { getTeamClass, appPrompt, ProjectBadges, getPhaseClass, logAudit, getInitials, apiFetch, hasPermission } from '../utils/core.js';
+import { getPhases, getTeams } from '../utils/configStore.js';
 import { ProjectCard } from './ProjectManagement.js';
 import { TASK_STATUSES, STATUS_META } from './TaskManagement.js';
 
 import { h } from 'https://esm.sh/preact';
-import { useState, useEffect, useMemo, useRef } from 'https://esm.sh/preact/hooks';
+import { useState, useEffect } from 'https://esm.sh/preact/hooks';
 import htm from 'https://esm.sh/htm';
 export const html = htm.bind(h);
 
-export const KanbanBoard = ({ projects, tasks, viewMode, setViewMode, onProjectClick, onUpdate }) => {
+export const KanbanBoard = ({ projects, tasks, viewMode, setViewMode, onProjectClick, onUpdate, currentUser }) => {
   const [drillDown, setDrillDown] = useState(null); // { project, phase }
 
-  const columns = viewMode === 'phase' ? PHASES : TEAMS;
+  const allTeams = getTeams();
+  const hasReadAll = hasPermission(currentUser, 'project.read_all') || hasPermission(currentUser, 'analytics.read_all') || hasPermission(currentUser, 'admin.panel');
+  const myTeams = currentUser ? (currentUser.teams || (currentUser.team ? [currentUser.team] : [])) : [];
+  
+  const columns = viewMode === 'phase' 
+    ? getPhases() 
+    : (hasReadAll ? allTeams : allTeams.filter(t => myTeams.includes(t)));
 
   const getPhaseTasks = (projectId, phase) => tasks.filter(t => t.project_id === projectId && t.crisp_dm_phase === phase);
 
@@ -35,7 +41,7 @@ export const KanbanBoard = ({ projects, tasks, viewMode, setViewMode, onProjectC
             <thead>
               <tr>
                 <th style="position:sticky;left:0;background:var(--bg-panel);z-index:2;width:250px;">Project</th>
-                ${PHASES.map(ph => html`<th style="text-align:center;min-width:120px;">${ph.replace(' Understanding','')}</th>`)}
+                ${getPhases().map(ph => html`<th style="text-align:center;min-width:120px;"><span class="tag ${getPhaseClass(ph)}" style="font-size:0.65rem;">${ph.replace(' Understanding','')}</span></th>`)}
               </tr>
             </thead>
             <tbody>
@@ -49,7 +55,7 @@ export const KanbanBoard = ({ projects, tasks, viewMode, setViewMode, onProjectC
                     <div style="font-size:0.75rem;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px;margin-top:0.5rem;">${p.title}</div>
                     <div style="font-size:0.7rem;margin-top:0.25rem;"><span class="tag ${getTeamClass(p.team)}" style="font-size:0.6rem;">${p.team}</span></div>
                   </td>
-                  ${PHASES.map(ph => {
+                  ${getPhases().map(ph => {
                     const phaseTasks = getPhaseTasks(p.id, ph);
                     const doneCount = phaseTasks.filter(t => t.status === 'done').length;
                     const totalCount = phaseTasks.length;
@@ -86,7 +92,10 @@ export const KanbanBoard = ({ projects, tasks, viewMode, setViewMode, onProjectC
             return html`
               <div class="column">
                 <div class="column-header">
-                  <span class="column-title">${col}</span>
+                  ${viewMode === 'phase' 
+                    ? html`<span class="tag ${getPhaseClass(col)}" style="font-size:0.75rem;padding:0.25rem 0.5rem;letter-spacing:0.05em;border-radius:4px;">${col}</span>`
+                    : html`<span class="column-title">${col}</span>`
+                  }
                   <span class="column-count">${colProjects.length}</span>
                 </div>
                 <div class="card-list">
@@ -111,23 +120,32 @@ export const KanbanBoard = ({ projects, tasks, viewMode, setViewMode, onProjectC
 
 export const PhaseDrillDown = ({ project, phase, tasks, onClose, onUpdate }) => {
   const [currentUser] = useState(() => JSON.parse(localStorage.getItem('currentUser')));
+  const canUpdate = hasPermission(currentUser, 'task.update');
   
   const handleStatusChange = async (task, newStatus) => {
+    if (task.is_blocked && newStatus !== task.status) {
+        appAlert("This task is blocked. Unblock it first.");
+        return;
+    }
     let resolution_note = task.resolution_note || '';
     let completed_by = task.completed_by || '';
-
+    let actual_hours = task.actual_hours;
     if (newStatus === 'done' && task.status !== 'done') {
       const note = await appPrompt("Task completed! Enter a resolution or completion note:", "", 'Completion Note');
       if (note === null) return; // cancellation
+      const hours = await appPrompt("How many actual hours were spent on this task?", task.estimated_hours || '0', 'Actual Effort');
+      if (hours === null) return; // cancellation
       resolution_note = note;
       completed_by = currentUser.username;
+      actual_hours = parseFloat(hours) || 0;
     }
 
     const payload = { 
       ...task, 
       status: newStatus,
       resolution_note: newStatus === 'done' ? resolution_note : null,
-      completed_by: newStatus === 'done' ? completed_by : null
+      completed_by: newStatus === 'done' ? completed_by : null,
+      actual_hours: newStatus === 'done' ? actual_hours : task.actual_hours
     };
     delete payload.created_at;
 
@@ -136,6 +154,7 @@ export const PhaseDrillDown = ({ project, phase, tasks, onClose, onUpdate }) => 
     });
     logAudit(currentUser, 'TASK_STATUS_CHANGED', `Moved task "${task.title}" to ${newStatus} via Deep Dive`);
     onUpdate();
+    window.showToast && window.showToast(`Task status updated to "${STATUS_META[newStatus]?.label || newStatus}" successfully!`);
   };
 
   return html`
@@ -166,9 +185,15 @@ export const PhaseDrillDown = ({ project, phase, tasks, onClose, onUpdate }) => 
                   else if (diffDays <= 2) dueDateBadge = { label: 'Due Soon', color: 'var(--accent-purple)' };
                 }
                 return html`
-                <div class="info-block" style="display:flex;justify-content:space-between;align-items:flex-start;padding:1rem;">
+                <div class="task-card-unified" 
+                     style="flex-direction: row; justify-content: space-between; align-items: flex-start; border-left: 4px solid ${task.is_blocked ? 'var(--accent-pink)' : 'var(--border-color)'}; margin-bottom: 1rem;"
+                     onClick=${(e) => {
+                       if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'SELECT' && e.target.tagName !== 'OPTION' && !e.target.closest('button') && !e.target.closest('select')) {
+                         window.openTaskDetail && window.openTaskDetail(task.id);
+                       }
+                     }}>
                   <div style="flex:1;">
-                    <div style="font-weight:700;margin-bottom:0.25rem;">${task.title}</div>
+                    <div style="font-weight:700;margin-bottom:0.25rem;">${task.title} ${task.is_blocked ? html`<span class="tag" style="background:var(--accent-pink);color:white;margin-left:0.5rem;animation:pulse 2s infinite;">BLOCKED</span>` : null}</div>
                     <div style="font-size:0.8rem;color:var(--text-secondary);">${task.description || 'No description provided.'}</div>
                     <div style="margin-top:0.5rem;display:flex;align-items:center;gap:1rem;">
                        <div class="assignee" style="background:transparent;padding:0;">
@@ -190,7 +215,15 @@ export const PhaseDrillDown = ({ project, phase, tasks, onClose, onUpdate }) => 
                     `}
                   </div>
                   <div style="display:flex;flex-direction:column;gap:0.5rem;align-items:flex-end;margin-left:1rem;">
-                     <select class="form-select" style="font-size:0.75rem;padding:0.25rem 0.5rem;" value=${task.status} onChange=${e => handleStatusChange(task, e.target.value)}>
+                     <button class="btn" style="color:${task.is_blocked ? 'var(--text-primary)' : 'var(--accent-pink)'};border:1px solid ${task.is_blocked ? 'var(--text-secondary)' : 'var(--accent-pink)'};padding:0.25rem 0.5rem;font-size:0.75rem;"
+                        disabled=${!canUpdate}
+                        onClick=${async () => {
+                           await apiFetch('/api/tasks/' + task.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({...task, is_blocked: task.is_blocked ? 0 : 1}) });
+                           onUpdate();
+                        }}>
+                        <i class="fa-solid ${task.is_blocked ? 'fa-unlock' : 'fa-lock'}"></i> ${task.is_blocked ? 'Unblock' : 'Block'}
+                     </button>
+                     <select class="form-select" style="font-size:0.75rem;padding:0.25rem 0.5rem;" value=${task.status} onChange=${e => handleStatusChange(task, e.target.value)} disabled=${!canUpdate}>
                         ${TASK_STATUSES.map(s => html`<option value=${s}>${STATUS_META[s].label}</option>`)}
                      </select>
                   </div>
