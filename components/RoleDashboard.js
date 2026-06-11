@@ -144,7 +144,7 @@ const SLABreachWarnings = ({ currentUser, projects }) => {
 /* ─────────────────────────────────────────────────────────────────
    SHORTCUTS MANAGER — shared quick links widget
    ───────────────────────────────────────────────────────────────── */
-const ShortcutsManager = ({ currentUser, dbConfig, saveConfig, teamsList }) => {
+export const ShortcutsManager = ({ currentUser, dbConfig, saveConfig, teamsList }) => {
   const [publishedShortcuts, setPublishedShortcuts] = useState([]);
   const [showAddModal, setShowAddModal] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
@@ -873,7 +873,7 @@ const LeaderHome = ({ currentUser, tasks, projects, users, setActiveTab, openPha
 
   const teamMembers = useMemo(() => (users||[]).filter(u => u.team === currentUser.team), [users, currentUser]);
 
-  const creationRequests = teamTasks.filter(t => t.approval_status === 'pending_approval' && t.created_by !== currentUser.username);
+  const creationRequests = teamTasks.filter(t => t.approval_status === 'pending_team_lead_approval' && t.created_by !== currentUser.username);
   const reviewQueue      = teamTasks.filter(t => t.status === 'review' && t.assignee !== currentUser.username);
   const totalActionable  = creationRequests.length + reviewQueue.length;
 
@@ -1357,6 +1357,38 @@ const AdminHome = ({ currentUser, tasks, projects, users, setActiveTab, dbConfig
     </div>`;
 };
 
+const ProjectLeadSummaryWidget = ({ ledProjects, tasks, currentUser, setActiveTab }) => {
+  const pendingApprovalsCount = (tasks || []).filter(t => {
+    const proj = ledProjects.find(p => p.id === t.project_id);
+    return proj && t.approval_status === 'pending_lead_approval';
+  }).length;
+
+  return html`
+    <div class="metric-card" style="padding: 1.5rem; margin-top: 1.5rem; margin-bottom: 1.5rem; border-left: 4px solid var(--accent-yellow); background: linear-gradient(135deg, rgba(234, 179, 8, 0.05) 0%, rgba(255, 255, 255, 0.02) 100%); display: flex; justify-content: space-between; align-items: center; gap: 1.5rem; flex-wrap: wrap; border-radius: 8px;">
+      <div style="display: flex; align-items: center; gap: 1.25rem;">
+        <div style="width: 3rem; height: 3rem; border-radius: 50%; background: rgba(234, 179, 8, 0.15); display: flex; align-items: center; justify-content: center; color: var(--accent-yellow); font-size: 1.5rem; flex-shrink: 0; box-shadow: 0 4px 12px rgba(234, 179, 8, 0.1);">
+          <i class="fa-solid fa-crown"></i>
+        </div>
+        <div>
+          <h3 style="font-size: 1.05rem; font-weight: 700; color: var(--text-primary); margin: 0 0 0.25rem 0; display: flex; align-items: center; gap: 0.5rem;">
+            Project Lead View
+          </h3>
+          <p style="font-size: 0.82rem; color: var(--text-secondary); margin: 0; line-height: 1.4;">
+            You are directing <strong style="color: var(--text-primary);">${ledProjects.length}</strong> project${ledProjects.length > 1 ? 's' : ''}. 
+            ${pendingApprovalsCount > 0 
+              ? html`There ${pendingApprovalsCount === 1 ? 'is' : 'are'} <strong style="color: var(--accent-yellow);">${pendingApprovalsCount}</strong> pending task assignment${pendingApprovalsCount === 1 ? '' : 's'} awaiting your review.`
+              : 'All task assignments are currently approved.'
+            }
+          </p>
+        </div>
+      </div>
+      <button class="btn" style="background: var(--accent-yellow); color: #0f172a; font-weight: 700; padding: 0.6rem 1.2rem; font-size: 0.82rem; display: flex; align-items: center; gap: 0.5rem; border: none; border-radius: 6px; box-shadow: 0 4px 10px rgba(234, 179, 8, 0.2); transition: all 0.2s;" onClick=${() => setActiveTab('lead_dashboard')}>
+        Go to Lead Dashboard <i class="fa-solid fa-arrow-right"></i>
+      </button>
+    </div>
+  `;
+};
+
 /* ─────────────────────────────────────────────────────────────────
    EXPORT: RoleDashboard — picks the right view based on role
    ───────────────────────────────────────────────────────────────── */
@@ -1457,15 +1489,28 @@ export const RoleDashboard = ({ currentUser, tasks, projects, users, setActiveTa
       `}
 
       ${isMember && html`
-        <${MemberHome} 
-          currentUser=${currentUser} 
-          tasks=${tasks} 
-          projects=${projects} 
-          setActiveTab=${setActiveTab}
-          dbConfig=${dbConfig}
-          saveConfig=${saveConfig}
-          teamsList=${teamsList}
-        />
+        <div>
+          <${MemberHome} 
+            currentUser=${currentUser} 
+            tasks=${tasks} 
+            projects=${projects} 
+            setActiveTab=${setActiveTab}
+            dbConfig=${dbConfig}
+            saveConfig=${saveConfig}
+            teamsList=${teamsList}
+          />
+          ${(projects || []).filter(p => p.project_lead_id === currentUser.id).length > 0 && html`
+            <div class="dashboard-divider" style="margin: 2rem 0; border-top: 1px dashed var(--border-color); position: relative; text-align: center;">
+              <span style="position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: var(--bg-primary); padding: 0 1rem; color: var(--text-secondary); font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Project Lead View</span>
+            </div>
+            <${ProjectLeadSummaryWidget} 
+              ledProjects=${(projects || []).filter(p => p.project_lead_id === currentUser.id)} 
+              tasks=${tasks} 
+              currentUser=${currentUser} 
+              setActiveTab=${setActiveTab} 
+            />
+          `}
+        </div>
       `}
 
       ${(isLeader && !isAdmin) && html`

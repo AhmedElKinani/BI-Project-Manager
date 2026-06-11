@@ -126,6 +126,7 @@ class Project(Base):
     short_description = Column(Text)
     full_description = Column(Text)
     stakeholders = Column(Text)
+    shortcuts = Column(Text)
     
     phase_rel = relationship("Phase")
     team_rel = relationship("Team")
@@ -138,6 +139,18 @@ class Project(Base):
     snapshots = relationship("ProjectSnapshot", back_populates="project", cascade="all, delete-orphan")
     actual_end_date = Column(String)
     launch_note = Column(Text)
+
+    members = relationship("ProjectMember", back_populates="project", cascade="all, delete-orphan")
+
+class ProjectMember(Base):
+    __tablename__ = "project_members"
+    project_id = Column(String, ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    assigned_phases = Column(Text, nullable=True)
+
+    project = relationship("Project", back_populates="members")
+    user = relationship("User")
+
 
 class Task(Base):
     __tablename__ = "tasks"

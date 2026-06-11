@@ -6,7 +6,7 @@ from fastapi import HTTPException
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from database import SessionLocal
-from models import User, Task, Project, Team, Role
+from models import User, Task, Project, Team, Role, ProjectMember
 from backend import update_task, delete_task, create_task
 
 def run_lifecycle_verification():
@@ -36,28 +36,53 @@ def run_lifecycle_verification():
 
         print(f"✅ Loaded Users: Admin ({admin_user.username}), Leader ({dev_leader.username}), Member ({dev_user.username})")
 
-        # 2. Test 1: Writing RLS Bypass Prevention (Leader trying to modify a management/global project's task)
-        # Find a task not belonging to dev_leader's team (e.g. team_id != 2 which is Dev Team)
-        other_team_task = db.query(Task).filter(Task.team_id != 2).first()
-        if other_team_task:
-            print(f"Test 1: dev_leader (Team 2) attempting to update task '{other_team_task.title}' (Team {other_team_task.team_id}) under RLS...")
-            try:
-                update_task(
-                    task_id=other_team_task.id,
-                    body={"title": "Malicious Title Change"},
-                    user_id=dev_leader.id,
-                    db=db
-                )
-                print("  ❌ Failed: Writing RLS was bypassed! Leader could update a task in another team.")
+        # 2. Test 1: Writing RLS Bypass Prevention (Leader trying to modify a task in another team/project)
+        # Ensure we have a project that is not led by dev_leader
+        test_project_rls = db.query(Project).filter_by(id="TEST-RLS-PROJ").first()
+        if not test_project_rls:
+            test_project_rls = Project(
+                id="TEST-RLS-PROJ",
+                title="TEST RLS PROJECT",
+                team_id=1,  # Management Team
+                project_lead_id=admin_user.id,  # Lead is Admin, not dev_leader
+                phase_id=1
+            )
+            db.add(test_project_rls)
+            db.commit()
+            db.refresh(test_project_rls)
+
+        other_team_task = Task(
+            project_id=test_project_rls.id,
+            title="Temp Cross Team Task",
+            status="todo",
+            assignee_id=None,
+            team_id=1,
+            phase_id=1
+        )
+        db.add(other_team_task)
+        db.commit()
+        db.refresh(other_team_task)
+
+        print(f"Test 1: dev_leader (Team 2) attempting to update task '{other_team_task.title}' (Team {other_team_task.team_id}) under RLS...")
+        try:
+            update_task(
+                task_id=other_team_task.id,
+                body={"title": "Malicious Title Change"},
+                user_id=dev_leader.id,
+                db=db
+            )
+            print("  ❌ Failed: Writing RLS was bypassed! Leader could update a task in another team.")
+            sys.exit(1)
+        except HTTPException as he:
+            if he.status_code == 403:
+                print(f"  ✅ Passed: Correctly blocked with {he.status_code} - '{he.detail}'")
+            else:
+                print(f"  ❌ Failed: Blocked but with wrong status code {he.status_code}")
                 sys.exit(1)
-            except HTTPException as he:
-                if he.status_code == 403:
-                    print(f"  ✅ Passed: Correctly blocked with {he.status_code} - '{he.detail}'")
-                else:
-                    print(f"  ❌ Failed: Blocked but with wrong status code {he.status_code}")
-                    sys.exit(1)
-        else:
-            print("ℹ️ Skipping Test 1: No cross-team tasks found in DB.")
+        finally:
+            db.delete(other_team_task)
+            db.delete(test_project_rls)
+            db.commit()
 
         # 3. Test 2: State-Based Deletion Guards (Leader trying to delete an in_progress task)
         # Fetch or create an in_progress task belonging to dev_leader's team (Team 2)
@@ -85,15 +110,28 @@ def run_lifecycle_verification():
             print("ℹ️ Skipping Test 2: No active team task found.")
 
         # 4. Test 3: Backend SOC 2 Segregation of Duties (SoD) Guard (Leader trying to self-approve a task they are assigned to)
-        # Query first available project from database dynamically to satisfy FK constraint
-        test_project = db.query(Project).first()
+        # Create a temporary project led by Admin to satisfy FK constraint and ensure dev_leader is not Project Lead
+        test_project = db.query(Project).filter_by(id="TEST-COMPLIANCE-PROJ").first()
         if not test_project:
-            print("❌ Setup Error: No project found in database.")
+            test_project = Project(
+                id="TEST-COMPLIANCE-PROJ",
+                title="TEST COMPLIANCE PROJECT",
+                team_id=2,  # Dev Team
+                project_lead_id=admin_user.id,  # Led by Admin, not dev_leader
+                phase_id=1
+            )
+            db.add(test_project)
+            db.commit()
+            db.refresh(test_project)
+
+        led_project = db.query(Project).filter_by(project_lead_id=dev_leader.id).first()
+        if not led_project:
+            print("❌ Setup Error: No project led by dev_leader found.")
             sys.exit(1)
             
         # Create a temporary task assigned to dev_leader, status in_progress
         temp_task = Task(
-            project_id=test_project.id,
+            project_id=led_project.id,
             title="Temp Peer Review Task",
             status="in_progress",
             assignee_id=dev_leader.id,
@@ -303,6 +341,16 @@ def run_lifecycle_verification():
             print("ℹ️ Skipping Test 6: Permissions not initialized in DB.")
 
         # 8. Test 7: Robust Task Status Transitions (Checking that None vs "" empty string mismatches do not block status transitions)
+        # Assign dev_user as a project member to allow status transitions
+        pm_link = db.query(ProjectMember).filter_by(project_id=test_project.id, user_id=dev_user.id).first()
+        added_pm = False
+        if not pm_link:
+            pm_link = ProjectMember(project_id=test_project.id, user_id=dev_user.id)
+            db.add(pm_link)
+            db.commit()
+            added_pm = True
+
+
         # Create an assigned task with None values for optional metadata
         mismatch_task = Task(
             project_id=test_project.id,
@@ -347,12 +395,16 @@ def run_lifecycle_verification():
             print(f"  ❌ Failed: Status change threw unexpected block/error: {e}")
             sys.exit(1)
             
-        # Clean up Test 7 task
+        # Clean up Test 7 task and project member mapping
         db.delete(mismatch_task)
+        if added_pm:
+            db.delete(pm_link)
         db.commit()
 
-        # Clean up temp task
+
+        # Clean up temp task and project
         db.delete(temp_task)
+        db.delete(test_project)
         db.commit()
         print("✅ Cleanup of temporary test tasks completed.")
 

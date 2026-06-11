@@ -13,6 +13,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request, Response, status, 
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 from sqlalchemy.orm import Session, joinedload
 
 # Structured production logging
@@ -27,7 +28,7 @@ from database import SessionLocal, engine, Base, get_db
 from models import (
     User, Project, Task, History, TaskComment, AuditLog, Notification, Message,
     Role, Permission, RolePermission, Team, Phase, TeamPhase, UserTeam, Session as SessionModel, TaskStateLog, ProjectStream,
-    PublishedShortcut, PhaseComment, SystemSetting, ProjectSnapshot
+    PublishedShortcut, PhaseComment, SystemSetting, ProjectSnapshot, ProjectMember
 )
 
 JWT_SECRET = os.environ.get('JWT_SECRET')
@@ -77,11 +78,22 @@ def serialize_model(obj, db: Session, active_phases: Optional[List[str]] = None)
             result["stakeholders"] = json.loads(obj.stakeholders or '[]')
         except:
             result["stakeholders"] = []
+        try:
+            result["shortcuts"] = json.loads(obj.shortcuts or '[]')
+        except:
+            result["shortcuts"] = []
         result["history"] = [serialize_model(h, db, active_phases) for h in obj.history]
         result["computed_progress"] = _compute_project_progress(obj, obj.tasks, db, active_phases)
         result["progress"] = result["computed_progress"]
         result["project_lead"] = obj.lead_rel.username if obj.lead_rel else None
         result["project_lead_id"] = obj.project_lead_id
+        result["members"] = [
+            {
+                "user_id": pm.user_id,
+                "username": pm.user.username if pm.user else "Unknown",
+                "assigned_phases": [p.strip() for p in (pm.assigned_phases or "").split(",") if p.strip()]
+            } for pm in (obj.members or [])
+        ]
 
     elif isinstance(obj, Task):
         result["crisp_dm_phase"] = obj.phase_rel.name if obj.phase_rel else ""
@@ -202,13 +214,13 @@ LEGACY_PERMISSION_MAP = {
     "project.update": ["can_write:Project"],
     "project.delete": ["can_delete:Project"],
     "project.manage": ["can_manage:Project"],
-    "project.phase_submit": ["can_submit_phase:Project", "can_read_team_phases:Phase"],
-    "project.phase_any": ["can_any_phase:Project", "can_read_all_phases:Phase"],
+    "project.phase_submit": ["can_submit_phase:Project"],
+    "project.phase_any": ["can_any_phase:Project"],
     "user.manage": ["can_manage:User"],
     "audit.read": ["menu_access:AuditLog"],
-    "analytics.read_all": ["can_read_all:Task", "can_read_all_tasks:Task", "can_read_all_projects:Project"],
-    "analytics.read_team": ["can_read_team:Task", "can_read_team_tasks:Task", "can_read_team_projects:Project"],
-    "analytics.read_own": ["can_read_own:Task", "can_read_own_tasks:Task", "can_read_own_projects:Project"],
+    "analytics.read_all": ["can_read_all:Task", "can_read_all_tasks:Task"],
+    "analytics.read_team": ["can_read_team:Task", "can_read_team_tasks:Task"],
+    "analytics.read_own": ["can_read_own:Task", "can_read_own_tasks:Task"],
     "admin.panel": ["menu_access:AdminPanel"],
     "config.manage": ["can_manage:Config"],
     "messages.read": ["menu_access:Comms"],
@@ -988,10 +1000,15 @@ def create_project(body: dict, user_id: int = Depends(get_current_user_id), db: 
 
 @app.put('/api/projects')
 def update_project(body: dict, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    check_permission('project.update', user_id, db)
     project_id = body.get('id')
     proj = db.query(Project).filter(Project.id == project_id).first()
     if not proj: raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Bypass permission if user is project lead of this project
+    if proj.project_lead_id == user_id:
+        pass
+    else:
+        check_permission('project.update', user_id, db)
     
     # RLS Scope Enforcement for projects
     if not has_permission('analytics.read_all', user_id, db):
@@ -1009,12 +1026,14 @@ def update_project(body: dict, user_id: int = Depends(get_current_user_id), db: 
         orig_blockers = proj.blockers or ""
         
         for k, v in body.items():
-            if hasattr(proj, k) and k not in ['id', 'history', 'blockers', 'stakeholders', 'phase', 'team', 'assignee', 'project_lead']:
+            if hasattr(proj, k) and k not in ['id', 'history', 'blockers', 'stakeholders', 'phase', 'team', 'assignee', 'project_lead', 'members', 'shortcuts']:
                 setattr(proj, k, v)
         
         if 'project_lead' in body:
-            if not has_permission('admin.panel', user_id, db):
-                raise HTTPException(status_code=403, detail="Only Admins can assign or change the Project Lead.")
+            is_admin = has_permission('admin.panel', user_id, db)
+            is_current_lead = (proj.project_lead_id == user_id)
+            if not is_admin and not is_current_lead:
+                raise HTTPException(status_code=403, detail="Only Admins or the current Project Lead can assign or change the Project Lead.")
             lead_val = body.get('project_lead')
             if not lead_val:
                 proj.project_lead_id = None
@@ -1045,6 +1064,7 @@ def update_project(body: dict, user_id: int = Depends(get_current_user_id), db: 
             
         proj.blockers = ", ".join(body.get('blockers', []))
         proj.stakeholders = json.dumps(body.get('stakeholders', []))
+        proj.shortcuts = json.dumps(body.get('shortcuts', []))
         
         history_payload = body.get('history', [])
         existing_hist = db.query(History).filter(History.project_id == project_id).all()
@@ -1106,13 +1126,15 @@ def update_project(body: dict, user_id: int = Depends(get_current_user_id), db: 
                 )
         db.commit()
         
-        broadcast_event("PROJECT_UPDATED", {"id": proj.id, "title": proj.title, "phase": proj.phase})
+        broadcast_event("PROJECT_UPDATED", {"id": proj.id, "title": proj.title, "phase": proj.phase_rel.name if proj.phase_rel else None})
         return {"status": "ok"}
     except HTTPException as he:
         db.rollback()
         raise he
     except Exception as e:
         db.rollback()
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete('/api/projects/{p_id}')
@@ -1719,8 +1741,95 @@ def update_project_stream(project_id: str, stream_id: int, body: dict, user_id: 
         for r_id in recipients:
             trigger_notification(r_id, msg, None, db)
         db.commit()
-        
     return serialize_model(stream, db)
+
+
+# --- PROJECT MEMBERS ---
+
+@app.get('/api/projects/{project_id}/members')
+def get_project_members(project_id: str, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    check_permission('project.read', user_id, db)
+    p_members = db.query(ProjectMember).filter_by(project_id=project_id).all()
+    res = []
+    for pm in p_members:
+        res.append({
+            "user_id": pm.user_id,
+            "username": pm.user.username if pm.user else "Unknown",
+            "assigned_phases": [p.strip() for p in (pm.assigned_phases or "").split(",") if p.strip()]
+        })
+    return res
+
+@app.post('/api/projects/{project_id}/members')
+def set_project_members(project_id: str, body: dict, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    proj = db.query(Project).filter(Project.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    is_lead_or_admin = (user_id == proj.project_lead_id) or has_permission('admin.panel', user_id, db)
+    if not is_lead_or_admin:
+        raise HTTPException(status_code=403, detail="Only the Project Lead or Admin can manage project members.")
+    
+    if 'user_id' in body:
+        # Single member add
+        target_user_id = int(body['user_id'])
+        existing = db.query(ProjectMember).filter_by(project_id=project_id, user_id=target_user_id).first()
+        if not existing:
+            phases_str = ",".join(body.get('assigned_phases', []))
+            pm = ProjectMember(
+                project_id=project_id,
+                user_id=target_user_id,
+                assigned_phases=phases_str if phases_str else None
+            )
+            db.add(pm)
+            db.commit()
+        return {"status": "ok"}
+    else:
+        # Bulk set
+        db.query(ProjectMember).filter_by(project_id=project_id).delete()
+        for m in body.get('members', []):
+            phases_str = ",".join(m.get('assigned_phases', []))
+            pm = ProjectMember(
+                project_id=project_id,
+                user_id=int(m['user_id']),
+                assigned_phases=phases_str if phases_str else None
+            )
+            db.add(pm)
+        db.commit()
+        return {"status": "ok"}
+
+@app.delete('/api/projects/{project_id}/members/{member_user_id}')
+def remove_project_member(project_id: str, member_user_id: int, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    proj = db.query(Project).filter(Project.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    is_lead_or_admin = (user_id == proj.project_lead_id) or has_permission('admin.panel', user_id, db)
+    if not is_lead_or_admin:
+        raise HTTPException(status_code=403, detail="Only the Project Lead or Admin can manage project members.")
+        
+    db.query(ProjectMember).filter_by(project_id=project_id, user_id=member_user_id).delete()
+    db.commit()
+    return {"status": "ok"}
+
+@app.put('/api/projects/{project_id}/members/{member_user_id}')
+def update_project_member_phases(project_id: str, member_user_id: int, body: dict, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    proj = db.query(Project).filter(Project.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    is_lead_or_admin = (user_id == proj.project_lead_id) or has_permission('admin.panel', user_id, db)
+    if not is_lead_or_admin:
+        raise HTTPException(status_code=403, detail="Only the Project Lead or Admin can manage project members.")
+        
+    pm = db.query(ProjectMember).filter_by(project_id=project_id, user_id=member_user_id).first()
+    if not pm:
+        raise HTTPException(status_code=404, detail="Member not found in project")
+        
+    phases_str = ",".join(body.get('assigned_phases', []))
+    pm.assigned_phases = phases_str if phases_str else None
+    db.commit()
+    return {"status": "ok"}
+
 
 # --- TASKS ---
 
@@ -1749,9 +1858,28 @@ def get_tasks(project_id: Optional[str] = None, team: Optional[str] = None, user
 
 @app.post('/api/tasks')
 def create_task(body: dict, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    check_permission('task.create', user_id, db)
+    project_id = body.get('project_id')
+    project = db.query(Project).filter_by(id=project_id).first() if project_id else None
     
+    # Bypass permission check if user is the project lead of THIS project
+    if project and project.project_lead_id == user_id:
+        pass
+    else:
+        check_permission('task.create', user_id, db)
+        
     u = db.query(User).filter(User.id == user_id).first()
+    role = db.query(Role).filter(Role.id == u.role_id).first() if u else None
+    
+    project_lead_id = project.project_lead_id if project else None
+    pending_notif_lead_id = None
+    pending_notif_team_leads = False
+    if project_lead_id:
+        is_lead_or_admin = (user_id == project_lead_id) or has_permission('admin.panel', user_id, db)
+        is_team_leader = has_permission('task.approve', user_id, db)
+        is_member = (role and role.name == 'member')
+        
+        if not is_lead_or_admin and not is_team_leader and not is_member:
+            raise HTTPException(status_code=403, detail="Only the Project Lead, a Lead, or an Admin can assign tasks on this project.")
     
     phase_id = body.get('phase_id')
     if not phase_id and body.get('crisp_dm_phase'):
@@ -1778,16 +1906,36 @@ def create_task(body: dict, user_id: int = Depends(get_current_user_id), db: Ses
     if team_id is not None:
         verify_scope_boundary(user_id, team_id, None, db, bypass_permission="analytics.read_all")
         
-    project_id = body.get('project_id')
-    project = db.query(Project).filter_by(id=project_id).first() if project_id else None
     if project_id and not project:
         raise HTTPException(status_code=400, detail=f"Project '{project_id}' not found")
     if not project_id:
         raise HTTPException(status_code=400, detail="A linked project is required to create a task")
+
+    # Member role check for project/phase assignment and self-assign limit
+    if role and role.name == 'member':
+        if assignee_id and assignee_id != user_id:
+            raise HTTPException(status_code=403, detail="Access Denied: Members can only assign tasks to themselves.")
+        
+        pm = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user_id).first()
+        if not pm:
+            raise HTTPException(status_code=403, detail="Access Denied: You are not assigned to this project.")
+            
+        if pm.assigned_phases:
+            assigned_phases = [p.strip() for p in pm.assigned_phases.split(",") if p.strip()]
+            phase_obj = db.query(Phase).filter(Phase.id == phase_id).first()
+            phase_name = phase_obj.name if phase_obj else None
+            if not phase_name or phase_name not in assigned_phases:
+                raise HTTPException(status_code=403, detail=f"Access Denied: You are not assigned to phase '{phase_name}' on this project.")
         
     if project and (project.status in ['archived', 'cancelled', 'completed'] or project.is_deployed or (project.phase_rel and project.phase_rel.is_terminal)):
         if not body.get('post_production', False):
             raise HTTPException(status_code=400, detail="Standard tasks cannot be created for a completed, archived, or deployed project. Use Post-Production instead.")
+            
+    # Resolve approval status using the two-phase approval logic
+    app_status, notify_lead_id, notify_team_leads = _determine_task_approval(project_id, assignee_id, user_id, db)
+    body['approval_status'] = app_status
+    pending_notif_lead_id = notify_lead_id
+    pending_notif_team_leads = notify_team_leads
         
     try:
         est_hours = body.get('estimated_hours')
@@ -1817,11 +1965,44 @@ def create_task(body: dict, user_id: int = Depends(get_current_user_id), db: Ses
             post_production=body.get('post_production', False)
         )
         db.add(new_task)
+        
+        # F1 Auto-Enroll
+        is_lead_or_admin = (project and project.project_lead_id == user_id) or has_permission('admin.panel', user_id, db)
+        if is_lead_or_admin and assignee_id:
+            _ensure_project_member(project_id, assignee_id, u.username, db)
+            
         db.commit()
         
         log = TaskStateLog(task_id=new_task.id, to_state=new_task.status, actor_id=u.id)
         db.add(log)
         db.commit()
+        
+        # F2 Approval notification
+        if pending_notif_lead_id:
+            trigger_notification(
+                user_id=pending_notif_lead_id,
+                message=f"User '{u.username}' submitted a task '{new_task.title}' for your approval on project '{project.title}'.",
+                related_task_id=new_task.id,
+                db=db
+            )
+            db.commit()
+            
+        if pending_notif_team_leads and new_task.assignee_id:
+            pt = db.query(UserTeam).filter_by(user_id=new_task.assignee_id, is_primary=True).first()
+            if pt:
+                team_users = db.query(User).join(UserTeam).filter(
+                    UserTeam.team_id == pt.team_id,
+                    User.is_active == 1
+                ).all()
+                team_leads = [user for user in team_users if has_permission("task.approve", user.id, db)]
+                for tl in team_leads:
+                    trigger_notification(
+                        user_id=tl.id,
+                        message=f"A task '{new_task.title}' has been submitted for your approval on team '{pt.team.name}'.",
+                        related_task_id=new_task.id,
+                        db=db
+                    )
+            db.commit()
         
         if new_task.assignee_id:
             trigger_notification(
@@ -1847,45 +2028,141 @@ def update_task(task_id: int, body: dict, user_id: int = Depends(get_current_use
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task: raise HTTPException(status_code=404, detail="Task not found")
     
+    # Read-only guard for assignee when task is pending approval
+    if task.approval_status in ['pending_lead_approval', 'pending_team_lead_approval'] and user_id == task.assignee_id:
+        if not has_permission('admin.panel', user_id, db):
+            raise HTTPException(status_code=403, detail="Task is pending approval and is read-only for the assignee.")
+            
+    notify_lead_on_update = False
+    notify_team_leads_on_update = False
+    
     # Project Lead vs Team Leader permission check
     task_project = db.query(Project).filter_by(id=task.project_id).first()
     project_lead_id = task_project.project_lead_id if task_project else None
     if project_lead_id:
         is_lead_or_admin = (user_id == project_lead_id) or has_permission('admin.panel', user_id, db)
+        is_team_leader = has_permission('task.approve', user_id, db)
+        
         if not is_lead_or_admin:
-            if 'approval_status' in body or 'acceptance_status' in body or body.get('status') == 'done':
-                raise HTTPException(status_code=403, detail="This project has a designated Project Lead. Only the Lead or Admin can approve tasks.")
-            
-            if 'assignee' in body or 'assignee_id' in body:
-                requested_assignee_id = None
-                if 'assignee_id' in body:
-                    requested_assignee_id = body.get('assignee_id')
-                    if requested_assignee_id == '': requested_assignee_id = None
-                elif 'assignee' in body:
+            # Determine assignee and cast to int to check if they are self-assigning/accepting
+            requested_assignee_id = task.assignee_id
+            if ('assignee_id' in body) or ('assignee' in body):
+                val = body.get('assignee_id')
+                if val is not None and val != '':
+                    try:
+                        requested_assignee_id = int(val)
+                    except (ValueError, TypeError):
+                        requested_assignee_id = None
+                else:
+                    requested_assignee_id = None
+                
+                if requested_assignee_id is None and 'assignee' in body:
                     assignee_val = body.get('assignee')
                     if assignee_val:
                         a_user = db.query(User).filter_by(username=assignee_val).first()
                         requested_assignee_id = a_user.id if a_user else None
-                
-                if requested_assignee_id != user_id:
-                    raise HTTPException(status_code=403, detail="This project has a designated Project Lead. Only the Lead or Admin can assign tasks.")
+
+            is_approving = False
+            if body.get('status') == 'done':
+                is_approving = True
+            if 'approval_status' in body and body.get('approval_status') == 'approved' and task.approval_status != 'approved':
+                is_approving = True
+            if 'acceptance_status' in body and body.get('acceptance_status') == 'accepted' and task.acceptance_status != 'accepted':
+                if requested_assignee_id != user_id or task.status == 'review':
+                    is_approving = True
+            
+            if is_approving:
+                raise HTTPException(status_code=403, detail="This project has a designated Project Lead. Only the Lead or Admin can approve tasks.")
+            
+            if 'assignee' in body or 'assignee_id' in body:
+                if requested_assignee_id != task.assignee_id:
+                    if is_team_leader:
+                        app_status, notify_lead_id, notify_team_leads = _determine_task_approval(task.project_id, requested_assignee_id, user_id, db)
+                        body['approval_status'] = app_status
+                        if app_status == 'pending_lead_approval':
+                            notify_lead_on_update = True
+                        elif app_status == 'pending_team_lead_approval':
+                            notify_team_leads_on_update = True
+                    elif requested_assignee_id != user_id:
+                        raise HTTPException(status_code=403, detail="This project has a designated Project Lead. Only the Lead or Admin can assign tasks.")
             
             if 'team' in body or 'team_id' in body:
-                requested_team_id = None
-                if 'team_id' in body:
-                    requested_team_id = body.get('team_id')
-                    if requested_team_id == '': requested_team_id = None
-                elif 'team' in body:
+                requested_team_id = task.team_id
+                val = body.get('team_id')
+                if val is not None and val != '':
+                    try:
+                        requested_team_id = int(val)
+                    except (ValueError, TypeError):
+                        requested_team_id = None
+                else:
+                    requested_team_id = None
+                
+                if requested_team_id is None and 'team' in body:
                     t_val = body.get('team')
                     if t_val:
                         t_obj = db.query(Team).filter_by(name=t_val).first()
                         requested_team_id = t_obj.id if t_obj else None
                 
                 if requested_team_id != task.team_id:
-                    raise HTTPException(status_code=403, detail="This project has a designated Project Lead. Only the Lead or Admin can change task teams.")
+                    if is_team_leader:
+                        app_status, notify_lead_id, notify_team_leads = _determine_task_approval(task.project_id, task.assignee_id, user_id, db)
+                        body['approval_status'] = app_status
+                        if app_status == 'pending_lead_approval':
+                            notify_lead_on_update = True
+                        elif app_status == 'pending_team_lead_approval':
+                            notify_team_leads_on_update = True
+                    else:
+                        raise HTTPException(status_code=403, detail="This project has a designated Project Lead. Only the Lead or Admin can change task teams.")
     
     current_user = db.query(User).filter(User.id == user_id).first()
     role = db.query(Role).filter(Role.id == current_user.role_id).first()
+
+    # Enforce Member Project and Phase restrictions
+    # Only apply when the member is self-assigning a task they don't already own.
+    # If the task is already assigned to the member, they are free to update status/acceptance.
+    if role and role.name == 'member':
+        requested_assignee_id = task.assignee_id
+        if ('assignee_id' in body) or ('assignee' in body):
+            val = body.get('assignee_id')
+            if val is not None and val != '':
+                try:
+                    requested_assignee_id = int(val)
+                except (ValueError, TypeError):
+                    requested_assignee_id = None
+            else:
+                requested_assignee_id = None
+                
+            if requested_assignee_id is None and 'assignee' in body:
+                assignee_val = body.get('assignee')
+                if assignee_val:
+                    a_user = db.query(User).filter_by(username=assignee_val).first()
+                    requested_assignee_id = a_user.id if a_user else None
+
+        # Only enforce ProjectMember check when the member is assigning a task to themselves
+        # that was previously unassigned (i.e. they are claiming or self-assigning it).
+        # If the task is already assigned to this member, skip the project membership guard
+        # so they can freely update status and acceptance on their own tasks.
+        is_claiming = (requested_assignee_id == user_id and task.assignee_id != user_id)
+        if is_claiming:
+            pm = db.query(ProjectMember).filter_by(project_id=task.project_id, user_id=user_id).first()
+            if not pm:
+                raise HTTPException(status_code=403, detail="Access Denied: You are not assigned to this project.")
+            
+            if pm.assigned_phases:
+                assigned_phases = [p.strip() for p in pm.assigned_phases.split(",") if p.strip()]
+                task_phase = db.query(Phase).filter(Phase.id == task.phase_id).first()
+                phase_name = task_phase.name if task_phase else None
+                
+                if 'crisp_dm_phase' in body:
+                    phase_name = body.get('crisp_dm_phase')
+                elif 'phase_id' in body:
+                    new_phase_id = body.get('phase_id')
+                    if new_phase_id:
+                        p_obj = db.query(Phase).filter(Phase.id == int(new_phase_id)).first()
+                        phase_name = p_obj.name if p_obj else None
+                
+                if phase_name and phase_name not in assigned_phases:
+                    raise HTTPException(status_code=403, detail=f"Access Denied: You are not assigned to phase '{phase_name}' on this project.")
     
     # RLS Scope Enforcement for task updates
     if not has_permission('analytics.read_all', user_id, db):
@@ -1899,7 +2176,8 @@ def update_task(task_id: int, body: dict, user_id: int = Depends(get_current_use
             
     # Assigned Task Metadata Protection Guard
     # Dynamic check: Does the user lack Admin Panel capabilities?
-    is_unauthorized = not has_permission("admin.panel", user_id, db)
+    is_lead_of_project = (task_project and task_project.project_lead_id == user_id)
+    is_unauthorized = not has_permission("admin.panel", user_id, db) and not is_lead_of_project
     if task.assignee_id is not None and is_unauthorized:
         protected_fields = ['title', 'description', 'team_id', 'assignee_id', 'priority', 'estimated_hours', 'start_date', 'due_date', 'project_id']
         for field in protected_fields:
@@ -1942,7 +2220,9 @@ def update_task(task_id: int, body: dict, user_id: int = Depends(get_current_use
             
     # SOC 2 Segregation of Duties (SoD) backend guard
     new_status = body.get('status')
-    if new_status == 'done' or body.get('approval_status') == 'approved':
+    is_completing = (new_status == 'done' and task.status != 'done')
+    is_approving = (body.get('approval_status') == 'approved' and task.approval_status != 'approved')
+    if is_completing or is_approving:
         if (task.assignee_id == user_id or task.created_by_id == user_id) and not has_permission("admin.panel", user_id, db):
             raise HTTPException(
                 status_code=403, 
@@ -2037,14 +2317,46 @@ def update_task(task_id: int, body: dict, user_id: int = Depends(get_current_use
         # Hooks for task triggers
         actor_username = current_user.username if current_user else "an administrator"
         if task.assignee_id and task.assignee_id != orig_assignee_id:
+            # F1 Auto-enroll: check if actor is lead or admin
+            is_lead_or_admin = (task_project and task_project.project_lead_id == user_id) or has_permission('admin.panel', user_id, db)
+            if is_lead_or_admin:
+                _ensure_project_member(task.project_id, task.assignee_id, actor_username, db)
+                db.commit()
+
             trigger_notification(
                 user_id=task.assignee_id,
                 message=f"You have been assigned to task: '{task.title}' by {actor_username}.",
                 related_task_id=task.id,
                 db=db
             )
+            db.commit()
             
-        if task.status != old_status:
+        # F2 notification on update
+        if notify_lead_on_update and project_lead_id:
+            trigger_notification(
+                user_id=project_lead_id,
+                message=f"User '{actor_username}' updated assignment on task '{task.title}' which requires your approval.",
+                related_task_id=task.id,
+                db=db
+            )
+            db.commit()
+
+        if notify_team_leads_on_update and task.assignee_id:
+            pt = db.query(UserTeam).filter_by(user_id=task.assignee_id, is_primary=True).first()
+            if pt:
+                team_users = db.query(User).join(UserTeam).filter(
+                    UserTeam.team_id == pt.team_id,
+                    User.is_active == 1
+                ).all()
+                team_leads = [user for user in team_users if has_permission("task.approve", user.id, db)]
+                for tl in team_leads:
+                    trigger_notification(
+                        user_id=tl.id,
+                        message=f"Task '{task.title}' assignment has been updated and requires your approval on team '{pt.team.name}'.",
+                        related_task_id=task.id,
+                        db=db
+                    )
+            db.commit()
             # Task status transition notification
             msg = f"{actor_username} updated status of task '{task.title}' to {task.status}."
             recipients = set()
@@ -2153,6 +2465,210 @@ def delete_task(task_id: int, user_id: int = Depends(get_current_user_id), db: S
     db.delete(task)
     db.commit()
     broadcast_event("TASK_DELETED", {"id": task_id})
+    return {"status": "ok"}
+
+@app.post('/api/tasks/{task_id}/approve-lead')
+def lead_approve_task(task_id: int, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    task = db.query(Task).filter_by(id=task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    project = db.query(Project).filter_by(id=task.project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.project_lead_id != user_id and not has_permission('admin.panel', user_id, db):
+        raise HTTPException(status_code=403, detail="Only the Project Lead or Admin can approve.")
+    
+    # Resolve assignee's primary team and its team leads
+    team_leads = []
+    if task.assignee_id:
+        pt = db.query(UserTeam).filter_by(user_id=task.assignee_id, is_primary=True).first()
+        if pt:
+            team_users = db.query(User).join(UserTeam).filter(
+                UserTeam.team_id == pt.team_id,
+                User.is_active == 1
+            ).all()
+            team_leads = [u.id for u in team_users if has_permission("task.approve", u.id, db)]
+            
+    # If the assignee has Team Leads, and none of them is the creator or the currently approving user:
+    needs_team_lead_approval = False
+    if team_leads:
+        if task.created_by_id not in team_leads and user_id not in team_leads:
+            needs_team_lead_approval = True
+            
+    if needs_team_lead_approval:
+        task.approval_status = 'pending_team_lead_approval'
+        db.commit()
+        # Notify Team Leads
+        pt = db.query(UserTeam).filter_by(user_id=task.assignee_id, is_primary=True).first()
+        team_name = pt.team.name if pt and pt.team else "their team"
+        for tl_id in team_leads:
+            trigger_notification(
+                user_id=tl_id,
+                message=f"Task '{task.title}' approved by Project Lead. Awaiting your Team Lead approval on team '{team_name}'.",
+                related_task_id=task.id,
+                db=db
+            )
+    else:
+        task.approval_status = 'approved'
+        db.commit()
+        # Auto-enroll assignee if not already a member
+        if task.assignee_id:
+            actor = db.query(User).filter_by(id=user_id).first()
+            actor_username = actor.username if actor else "Project Lead"
+            _ensure_project_member(task.project_id, task.assignee_id, actor_username, db)
+            db.commit()
+
+        # Notify assignee and original creator
+        if task.assignee_id:
+            trigger_notification(
+                user_id=task.assignee_id,
+                message=f"Your task '{task.title}' has been approved by the Project Lead.",
+                related_task_id=task.id,
+                db=db
+            )
+        if task.created_by_id and task.created_by_id != task.assignee_id:
+            trigger_notification(
+                user_id=task.created_by_id,
+                message=f"Task '{task.title}' you submitted was approved by the Project Lead.",
+                related_task_id=task.id,
+                db=db
+            )
+            
+    db.commit()
+    broadcast_event("TASK_UPDATED", {"id": task.id, "title": task.title, "status": task.status})
+    return {"status": "ok"}
+
+@app.post('/api/tasks/{task_id}/reject-lead')
+def lead_reject_task(task_id: int, body: dict, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    task = db.query(Task).filter_by(id=task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    project = db.query(Project).filter_by(id=task.project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.project_lead_id != user_id and not has_permission('admin.panel', user_id, db):
+        raise HTTPException(status_code=403, detail="Only the Project Lead or Admin can reject.")
+    
+    task.approval_status = 'rejected'
+    rejection_reason = body.get('reason', '')
+    db.commit()
+    # Notify creator and assignee
+    reason_text = f" Reason: {rejection_reason}" if rejection_reason else ""
+    if task.created_by_id:
+        trigger_notification(
+            user_id=task.created_by_id,
+            message=f"Task '{task.title}' was rejected by the Project Lead.{reason_text}",
+            related_task_id=task.id,
+            db=db
+        )
+    if task.assignee_id and task.assignee_id != task.created_by_id:
+        trigger_notification(
+            user_id=task.assignee_id,
+            message=f"Task '{task.title}' assigned to you was rejected by the Project Lead.{reason_text}",
+            related_task_id=task.id,
+            db=db
+        )
+    db.commit()
+    broadcast_event("TASK_UPDATED", {"id": task.id, "title": task.title, "status": task.status})
+    return {"status": "ok"}
+
+@app.post('/api/tasks/{task_id}/approve-team-lead')
+def team_lead_approve_task(task_id: int, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    task = db.query(Task).filter_by(id=task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+        
+    if not task.assignee_id:
+        raise HTTPException(status_code=400, detail="Task must have an assignee for Team Lead approval.")
+        
+    # Verify user is a Team Lead for assignee's primary team, or Admin
+    is_authorized = False
+    if has_permission('admin.panel', user_id, db):
+        is_authorized = True
+    else:
+        # Resolve assignee's primary team
+        pt = db.query(UserTeam).filter_by(user_id=task.assignee_id, is_primary=True).first()
+        if pt:
+            # Check if current user is on same team and has task.approve permission
+            ut = db.query(UserTeam).filter_by(user_id=user_id, team_id=pt.team_id).first()
+            if ut and has_permission('task.approve', user_id, db):
+                is_authorized = True
+                
+    if not is_authorized:
+        raise HTTPException(status_code=403, detail="Only a Team Lead for the assignee's primary team or Admin can approve.")
+        
+    task.approval_status = 'approved'
+    db.commit()
+    
+    # Auto-enroll assignee if not already a member
+    actor = db.query(User).filter_by(id=user_id).first()
+    actor_username = actor.username if actor else "Team Lead"
+    _ensure_project_member(task.project_id, task.assignee_id, actor_username, db)
+    db.commit()
+    
+    # Notify assignee and creator
+    trigger_notification(
+        user_id=task.assignee_id,
+        message=f"Your task '{task.title}' has been approved by the Team Lead.",
+        related_task_id=task.id,
+        db=db
+    )
+    if task.created_by_id and task.created_by_id != task.assignee_id:
+        trigger_notification(
+            user_id=task.created_by_id,
+            message=f"Task '{task.title}' was approved by the Team Lead.",
+            related_task_id=task.id,
+            db=db
+        )
+    db.commit()
+    broadcast_event("TASK_UPDATED", {"id": task.id, "title": task.title, "status": task.status})
+    return {"status": "ok"}
+
+@app.post('/api/tasks/{task_id}/reject-team-lead')
+def team_lead_reject_task(task_id: int, body: dict, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    task = db.query(Task).filter_by(id=task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+        
+    if not task.assignee_id:
+        raise HTTPException(status_code=400, detail="Task must have an assignee for Team Lead rejection.")
+        
+    # Verify user is a Team Lead for assignee's primary team, or Admin
+    is_authorized = False
+    if has_permission('admin.panel', user_id, db):
+        is_authorized = True
+    else:
+        pt = db.query(UserTeam).filter_by(user_id=task.assignee_id, is_primary=True).first()
+        if pt:
+            ut = db.query(UserTeam).filter_by(user_id=user_id, team_id=pt.team_id).first()
+            if ut and has_permission('task.approve', user_id, db):
+                is_authorized = True
+                
+    if not is_authorized:
+        raise HTTPException(status_code=403, detail="Only a Team Lead for the assignee's primary team or Admin can reject.")
+        
+    task.approval_status = 'rejected'
+    rejection_reason = body.get('reason', '')
+    db.commit()
+    
+    # Notify creator and assignee
+    reason_text = f" Reason: {rejection_reason}" if rejection_reason else ""
+    if task.created_by_id:
+        trigger_notification(
+            user_id=task.created_by_id,
+            message=f"Task '{task.title}' was rejected by the Team Lead.{reason_text}",
+            related_task_id=task.id,
+            db=db
+        )
+    if task.assignee_id and task.assignee_id != task.created_by_id:
+        trigger_notification(
+            user_id=task.assignee_id,
+            message=f"Task '{task.title}' assigned to you was rejected by the Team Lead.{reason_text}",
+            related_task_id=task.id,
+            db=db
+        )
+    db.commit()
+    broadcast_event("TASK_UPDATED", {"id": task.id, "title": task.title, "status": task.status})
     return {"status": "ok"}
 
 @app.get('/api/tasks/{task_id}/logs')
@@ -2289,6 +2805,66 @@ def create_audit_log(body: dict, user_id: int = Depends(get_current_user_id), db
     db.add(new_log)
     db.commit()
     return {"status": "ok"}
+
+def _determine_task_approval(project_id: str, assignee_id: Optional[int], creator_id: int, db: Session):
+    """
+    Returns (approval_status, notify_lead_id, notify_team_leads)
+    notify_team_leads is a boolean indicating if we notify the assignee's team leads.
+    """
+    # If creator is Admin, bypass approvals entirely.
+    if has_permission('admin.panel', creator_id, db):
+        return 'approved', None, False
+        
+    proj = db.query(Project).filter_by(id=project_id).first()
+    project_lead_id = proj.project_lead_id if proj else None
+    
+    # If there is no assignee, approval doesn't apply in the same way.
+    if not assignee_id:
+        return 'approved', None, False
+
+    # Resolve assignee's primary team and its team leads (who have task.approve)
+    team_leads = []
+    pt = db.query(UserTeam).filter_by(user_id=assignee_id, is_primary=True).first()
+    if pt:
+        team_users = db.query(User).join(UserTeam).filter(
+            UserTeam.team_id == pt.team_id,
+            User.is_active == 1
+        ).all()
+        team_leads = [u.id for u in team_users if has_permission("task.approve", u.id, db)]
+        
+    # If the creator is the assignee's Team Lead, it is pre-approved.
+    if creator_id in team_leads:
+        return 'approved', None, False
+        
+    # Phase 1: Project Lead approval.
+    # Required if: project has a lead AND creator is NOT that project lead.
+    if project_lead_id and creator_id != project_lead_id:
+        return 'pending_lead_approval', project_lead_id, False
+        
+    # Phase 2: Team Lead approval.
+    # Required if: assignee has Team Lead(s) AND creator is NOT one of those Team Leads.
+    if team_leads:
+        return 'pending_team_lead_approval', None, True
+        
+    return 'approved', None, False
+
+def _ensure_project_member(project_id: str, assignee_id: int, actor_username: str, db: Session):
+    """Auto-create a ProjectMember record when a lead/admin assigns someone to a project task."""
+    if not assignee_id:
+        return
+    existing = db.query(ProjectMember).filter_by(
+        project_id=project_id, user_id=assignee_id
+    ).first()
+    if not existing:
+        db.add(ProjectMember(project_id=project_id, user_id=assignee_id, assigned_phases=None))
+        proj = db.query(Project).filter_by(id=project_id).first()
+        proj_title = proj.title if proj else project_id
+        trigger_notification(
+            user_id=assignee_id,
+            message=f"You have been added as a member of project '{proj_title}' by {actor_username}.",
+            related_task_id=None,
+            db=db
+        )
 
 def trigger_notification(user_id: int, message: str, related_task_id: Optional[int], db: Session):
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -2638,6 +3214,25 @@ async def sla_breach_monitor_loop():
 async def startup_event():
     # Run migrations and metadata schemas locally on startup if need be
     # Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        try:
+            db.execute(text("ALTER TABLE projects ADD COLUMN shortcuts TEXT;"))
+            db.commit()
+            logger.info("Database migration: Added 'shortcuts' column to 'projects' table.")
+        except Exception as alter_err:
+            db.rollback()
+            logger.info(f"Database migration note: 'shortcuts' column check completed (already exists or skipped): {alter_err}")
+            
+        db.query(Role).filter_by(name="leader").update({"label": "Lead"})
+        db.query(Role).filter_by(name="member").update({"label": "Member"})
+        db.commit()
+    except Exception as e:
+        logger.error(f"Failed to migrate role labels: {e}")
+        db.rollback()
+    finally:
+        db.close()
+        
     asyncio.create_task(sla_breach_monitor_loop())
 
 # --- FRONTEND SINGLE PAGE APP (SPA) WILD-CARD PATH SERVING ---

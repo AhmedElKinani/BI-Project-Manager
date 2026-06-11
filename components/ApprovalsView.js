@@ -12,12 +12,16 @@ export const ApprovalsView = ({ tasks, fetchTasks, currentUser, projects }) => {
 
   // Helper to determine if the user has approval/management rights on this specific task
   const canUserActOnTask = (t) => {
+    if (isAdmin) return true;
+    
+    if (t.approval_status === 'pending_team_lead_approval') {
+      return myTeams.includes(t.team) && hasPermission(currentUser, 'task.approve');
+    }
+    
     const proj = (projects||[]).find(p => p.id === t.project_id);
     const isProjectLead = proj && proj.project_lead_id === currentUser.id;
-    const isUserAdmin = isAdmin;
     const projectHasLead = proj && proj.project_lead_id;
 
-    if (isUserAdmin) return true;
     if (isProjectLead) return true;
     if (projectHasLead) return false; // Other team leaders lose rights on project with lead
 
@@ -29,16 +33,9 @@ export const ApprovalsView = ({ tasks, fetchTasks, currentUser, projects }) => {
   };
 
   // Segregation of Duties filtering:
-  // Show tasks where current user is Admin, Project Lead, or Team Leader of the task's team.
+  // Show tasks where current user is Admin or Team Leader of the task's team, and status is pending_team_lead_approval.
   const allCreations = tasks.filter(t => {
-    const proj = (projects||[]).find(p => p.id === t.project_id);
-    const isProjectLead = proj && proj.project_lead_id === currentUser.id;
-    const isTeamLeader = myTeams.includes(t.team) && (
-      hasPermission(currentUser, 'task.approve') || 
-      hasPermission(currentUser, 'task.review_accept') || 
-      hasPermission(currentUser, 'task.review_finish')
-    );
-    return (isAdmin || isProjectLead || isTeamLeader) && t.approval_status === 'pending_approval';
+    return (isAdmin || (myTeams.includes(t.team) && hasPermission(currentUser, 'task.approve'))) && t.approval_status === 'pending_team_lead_approval';
   });
   const creationApprovals = allCreations.filter(t => t.created_by !== currentUser.username);
   const selfCreations = allCreations.filter(t => t.created_by === currentUser.username);
@@ -73,25 +70,19 @@ export const ApprovalsView = ({ tasks, fetchTasks, currentUser, projects }) => {
 
   const processApproval = async (task, isApproved) => {
     if (isApproved) {
-      await apiFetch('/api/tasks/' + task.id, { 
-        method: 'PUT', 
-        headers: {'Content-Type':'application/json'}, 
-        body: JSON.stringify({...task, approval_status: 'approved'}) 
+      await apiFetch(`/api/tasks/${task.id}/approve-team-lead`, { 
+        method: 'POST'
       });
-      sendNotification(task.created_by, `Your self-assigned task "${task.title}" was approved.`, task.id);
-      sendChannelMessage(task.team, '🤖 System', `✅ Self-assigned task approved: [TASK:${task.id}:${task.title}] by @${task.created_by} is now active.`);
-      addLog(task, 'Self-Assignment', 'Approved');
+      addLog(task, 'Team-Lead Approval', 'Approved');
     } else {
-      const reason = await appPrompt("Reject self-assignment. Why is it rejected?", "", 'Reject Self-Assignment');
+      const reason = await appPrompt("Reject assignment. Why is it rejected?", "", 'Reject Assignment');
       if (reason === null) return;
-      await apiFetch('/api/tasks/' + task.id, { 
-        method: 'PUT', 
+      await apiFetch(`/api/tasks/${task.id}/reject-team-lead`, { 
+        method: 'POST', 
         headers: {'Content-Type':'application/json'}, 
-        body: JSON.stringify({...task, approval_status: 'rejected', rejection_reason: reason}) 
+        body: JSON.stringify({ reason }) 
       });
-      sendNotification(task.created_by, `Your self-assigned task "${task.title}" was rejected: ${reason}`);
-      sendChannelMessage(task.team, '🤖 System', `❌ Self-assigned task rejected: "${task.title}" submitted by @${task.created_by}. Reason: ${reason}`);
-      addLog(task, 'Self-Assignment', 'Rejected');
+      addLog(task, 'Team-Lead Approval', 'Rejected');
     }
     logAudit(currentUser, 'TASK_APPROVAL', `${isApproved ? 'Approved' : 'Rejected'} task "${task.title}" from ${task.created_by}`);
     fetchTasks();
@@ -136,6 +127,36 @@ export const ApprovalsView = ({ tasks, fetchTasks, currentUser, projects }) => {
     fetchTasks();
   };
 
+  const handleLeadApprove = async (task) => {
+    try {
+      const res = await apiFetch(`/api/tasks/${task.id}/approve-lead`, { method: 'POST' });
+      if (res.ok) {
+        addLog(task, 'Lead Approval', 'Approved');
+        fetchTasks();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleLeadReject = async (task) => {
+    try {
+      const reason = await appPrompt("Reject task assignment. Why is it rejected?", "", 'Reject Task Assignment');
+      if (reason === null) return;
+      const res = await apiFetch(`/api/tasks/${task.id}/reject-lead`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason })
+      });
+      if (res.ok) {
+        addLog(task, 'Lead Approval', 'Rejected');
+        fetchTasks();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const renderTask = (t, type) => {
     const proj = (projects||[]).find(p => p.id === t.project_id);
     const hasLead = proj && proj.project_lead;
@@ -176,7 +197,7 @@ export const ApprovalsView = ({ tasks, fetchTasks, currentUser, projects }) => {
     <div>
       <div class="page-header">
         <div>
-          <h2 class="page-title"><i class="fa-solid fa-stamp" style="margin-right:0.6rem;color:var(--accent-orange);"></i>Management Approvals</h2>
+          <h2 class="page-title"><i class="fa-solid fa-stamp" style="margin-right:0.6rem;color:var(--accent-orange);"></i>Team Lead Approvals</h2>
           <p class="page-subtitle">Verify task completions, manage team workload, and approve new initiatives with SoD security compliance</p>
         </div>
       </div>
@@ -191,11 +212,11 @@ export const ApprovalsView = ({ tasks, fetchTasks, currentUser, projects }) => {
       `}
 
       <div class="grid-3" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));gap:1.5rem;">
-        <!-- Column 1: Creation Requests -->
+        <!-- Column 1: Team Approvals -->
         <div class="metric-card" style="padding:1.25rem;border-top:3px solid var(--accent-orange);">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;">
             <div style="display:flex;align-items:center;gap:0.5rem;">
-               <h3 style="font-size:0.95rem;font-weight:700;color:var(--accent-orange);margin:0;"><i class="fa-solid fa-plus-circle"></i> Creation Requests</h3>
+               <h3 style="font-size:0.95rem;font-weight:700;color:var(--accent-orange);margin:0;"><i class="fa-solid fa-plus-circle"></i> Team Approvals</h3>
                <span style="font-size:0.75rem;background:rgba(251,146,60,0.15);color:var(--accent-orange);padding:0.1rem 0.5rem;border-radius:10px;font-weight:700;">${creationApprovals.length}</span>
             </div>
             ${creationApprovals.filter(canUserActOnTask).length > 0 && html`
@@ -251,6 +272,68 @@ export const ApprovalsView = ({ tasks, fetchTasks, currentUser, projects }) => {
           }
         </div>
       </div>
+
+      ${(projects || []).some(p => p.project_lead_id === currentUser.id) && html`
+        <div style="margin-top: 2.5rem; margin-bottom: 2rem;">
+          <div class="sticky-section-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem;">
+            <span style="font-size:1.2rem; font-weight:700; color:var(--accent-yellow); display:flex; align-items:center; gap:0.5rem;">
+              <i class="fa-solid fa-crown"></i> Lead Project Approvals
+            </span>
+            <span style="font-size:0.8rem; background:rgba(234,179,8,0.15); color:var(--accent-yellow); padding:0.2rem 0.6rem; border-radius:10px; font-weight:700;">
+              ${tasks.filter(t => {
+                const proj = (projects || []).find(p => p.id === t.project_id);
+                return proj && proj.project_lead_id === currentUser.id && t.approval_status === 'pending_lead_approval';
+              }).length} Pending
+            </span>
+          </div>
+
+          ${tasks.filter(t => {
+            const proj = (projects || []).find(p => p.id === t.project_id);
+            return proj && proj.project_lead_id === currentUser.id && t.approval_status === 'pending_lead_approval';
+          }).length === 0 ? html`
+            <div style="text-align:center; padding:3rem 2rem; color:var(--text-secondary); font-style:italic; font-size:0.9rem; border:1px dashed var(--border-color); border-radius:8px; background: rgba(255,255,255,0.01);">
+              <i class="fa-solid fa-circle-check" style="font-size:2rem; color:var(--accent-green); margin-bottom:0.75rem; display:block;"></i>
+              No lead project approvals pending. All clear!
+            </div>
+          ` : html`
+            <div class="grid-3" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:1.5rem;">
+              ${tasks.filter(t => {
+                const proj = (projects || []).find(p => p.id === t.project_id);
+                return proj && proj.project_lead_id === currentUser.id && t.approval_status === 'pending_lead_approval';
+              }).map(t => {
+                const proj = (projects||[]).find(p => p.id === t.project_id);
+                return html`
+                  <div class="metric-card" style="padding:1.25rem; border-top:3px solid var(--accent-yellow); background:rgba(255,255,255,0.02); display:flex; flex-direction:column; justify-content:space-between; gap:1rem;">
+                    <div>
+                      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.5rem;">
+                        <span style="font-size:0.72rem; padding:0.15rem 0.4rem; background:rgba(234,179,8,0.15); color:var(--accent-yellow); border-radius:4px; font-weight:700; text-transform:uppercase;">
+                          ${proj ? proj.title : t.project_id}
+                        </span>
+                        <span style="font-size:0.75rem; color:var(--text-secondary);">
+                          Phase: <strong>${t.crisp_dm_phase}</strong>
+                        </span>
+                      </div>
+                      <h4 style="font-size:1rem; font-weight:700; color:var(--text-primary); margin:0 0 0.5rem 0;">${t.title}</h4>
+                      <p style="font-size:0.82rem; color:var(--text-secondary); margin:0; line-height:1.4; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;" title=${t.description}>
+                        ${t.description || html`<span style="font-style:italic;color:var(--text-muted);">No description provided</span>`}
+                      </p>
+                    </div>
+                    <div style="border-top:1px solid rgba(255,255,255,0.05); padding-top:0.75rem; display:flex; justify-content:space-between; align-items:center;">
+                      <div style="font-size:0.78rem; color:var(--text-secondary);">
+                        Assignee: <strong style="color:var(--text-primary);">@${t.assignee || 'Unassigned'}</strong>
+                      </div>
+                      <div style="display:flex; gap:0.5rem;">
+                        <button class="btn" style="background:var(--accent-green); color:white; padding:0.3rem 0.6rem; font-size:0.75rem;" onClick=${() => handleLeadApprove(t)}>Approve</button>
+                        <button class="btn" style="border:1px solid var(--accent-orange); color:var(--accent-orange); padding:0.3rem 0.6rem; font-size:0.75rem;" onClick=${() => handleLeadReject(t)}>Reject</button>
+                      </div>
+                    </div>
+                  </div>
+                `;
+              })}
+            </div>
+          `}
+        </div>
+      `}
     </div>
   `;
 };

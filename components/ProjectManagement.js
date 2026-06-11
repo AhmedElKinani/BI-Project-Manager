@@ -7,6 +7,15 @@ import { useState, useEffect, useMemo } from 'https://esm.sh/preact/hooks';
 import htm from 'https://esm.sh/htm';
 export const html = htm.bind(h);
 
+export const detectUrlIcon = (url) => {
+  if (!url) return 'fa-solid fa-link';
+  const lowercase = url.toLowerCase();
+  if (lowercase.includes('github.com')) return 'fa-brands fa-github';
+  if (lowercase.includes('docs.google.com') || lowercase.includes('sheets.google.com') || lowercase.includes('drive.google.com')) return 'fa-solid fa-file-lines';
+  if (lowercase.includes('notion') || lowercase.includes('wiki') || lowercase.includes('confluence')) return 'fa-solid fa-book';
+  return 'fa-solid fa-link';
+};
+
 export const ProjectsManagementTab = ({ projects, fetchProjects, setEditId }) => {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -229,6 +238,35 @@ export const CreateProjectTab = ({ onSave, currentUser }) => {
   const [fieldErrors, setFieldErrors] = useState({});
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState(null);
+  const [assignedMembers, setAssignedMembers] = useState([]);
+
+  const addMember = (userId) => {
+    const user = getUsersObj().find(u => u.id === parseInt(userId));
+    if (!user) return;
+    if (assignedMembers.some(m => m.user_id === user.id)) return;
+    setAssignedMembers([...assignedMembers, {
+      user_id: user.id,
+      username: user.username,
+      assigned_phases: []
+    }]);
+  };
+
+  const removeMember = (userId) => {
+    setAssignedMembers(assignedMembers.filter(m => m.user_id !== userId));
+  };
+
+  const toggleMemberPhase = (userId, phaseName) => {
+    setAssignedMembers(assignedMembers.map(m => {
+      if (m.user_id === userId) {
+        const hasPhase = m.assigned_phases.includes(phaseName);
+        const newPhases = hasPhase
+          ? m.assigned_phases.filter(p => p !== phaseName)
+          : [...m.assigned_phases, phaseName];
+        return { ...m, assigned_phases: newPhases };
+      }
+      return m;
+    }));
+  };
 
   const validateStep = (step) => {
     const errors = {};
@@ -266,7 +304,7 @@ export const CreateProjectTab = ({ onSave, currentUser }) => {
 
   const handleNext = () => {
     if (validateStep(wizardStep)) {
-      setWizardStep(prev => Math.min(prev + 1, 3));
+      setWizardStep(prev => Math.min(prev + 1, 4));
     }
   };
 
@@ -308,6 +346,19 @@ export const CreateProjectTab = ({ onSave, currentUser }) => {
         setError(err.detail || err.error || 'Failed to create project');
         return;
       }
+      
+      const projId = form.id.trim();
+      const membersRes = await apiFetch(`/api/projects/${projId}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ members: assignedMembers })
+      });
+      if (!membersRes.ok) {
+        const err = await membersRes.json();
+        setError(err.detail || err.error || 'Failed to assign project members');
+        return;
+      }
+      
       onSave();
     } catch (err) {
       setError(err.message || 'An unexpected error occurred.');
@@ -319,7 +370,8 @@ export const CreateProjectTab = ({ onSave, currentUser }) => {
   const stepLabels = [
     { number: 1, label: "Project Identity" },
     { number: 2, label: isHistorical ? "Timeline & Registration" : "Timeline & Type" },
-    { number: 3, label: isHistorical ? "Phase Notes & Lessons" : "Phase Roadmap" }
+    { number: 3, label: isHistorical ? "Phase Notes & Lessons" : "Phase Roadmap" },
+    { number: 4, label: "Project Members" }
   ];
 
   return html`
@@ -331,7 +383,7 @@ export const CreateProjectTab = ({ onSave, currentUser }) => {
         </h2>
         
         <div class="wizard-steps">
-          <div class="wizard-progress-bar" style="width: ${((wizardStep - 1) / 2) * 66.6}%"></div>
+          <div class="wizard-progress-bar" style="width: ${((wizardStep - 1) / 3) * 100}%"></div>
           ${stepLabels.map(s => html`
             <div class="wizard-step-node ${wizardStep === s.number ? 'active' : ''} ${wizardStep > s.number ? 'completed' : ''}" key=${s.number}>
               <div class="wizard-step-circle">
@@ -514,6 +566,93 @@ export const CreateProjectTab = ({ onSave, currentUser }) => {
             </div>
           </div>
         `}
+
+        ${wizardStep === 4 && html`
+          <div class="wizard-slide-container">
+            <div style="background:rgba(139,92,246,0.05);border:1px solid rgba(139,92,246,0.15);border-radius:var(--radius-md);padding:1.25rem;display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem;">
+              <i class="fa-solid fa-users-gear" style="font-size:1.5rem;color:var(--accent-purple);"></i>
+              <div>
+                <div style="font-weight:700;color:var(--text-primary);margin-bottom:0.2rem;">Configure Project Team & Permissions</div>
+                <div style="font-size:0.82rem;color:var(--text-secondary);line-height:1.4;">
+                  Assign team members to this project. You can restrict which CRISP-DM phases they are allowed to create/self-assign tasks in. Leave all phase checkboxes unchecked to grant access to <strong>all phases</strong>.
+                </div>
+              </div>
+            </div>
+
+            <!-- Member Add Control -->
+            <div style="display:flex;gap:0.75rem;align-items:flex-end;margin-bottom:1.5rem;background:rgba(0,0,0,0.1);padding:1rem;border-radius:8px;border:1px solid var(--border-color);">
+              <div style="flex:1;">
+                <label style="font-weight:600;display:block;margin-bottom:0.4rem;color:var(--text-primary);">Select User</label>
+                <select id="new-member-select" class="form-select" style="width:100%;">
+                  <option value="">— Select a user to add —</option>
+                  ${getUsersObj()
+                    .filter(u => u.username !== 'admin' && !assignedMembers.some(m => m.user_id === u.id))
+                    .map(u => html`<option value=${u.id} key=${u.id}>${u.username} (${u.role || 'member'})</option>`)}
+                </select>
+              </div>
+              <button type="button" class="btn active" style="background:var(--accent-purple);height:42px;display:flex;align-items:center;justify-content:center;gap:0.4rem;padding:0 1.25rem;"
+                onClick=${() => {
+                  const selEl = document.getElementById('new-member-select');
+                  if (selEl && selEl.value) {
+                    addMember(selEl.value);
+                    selEl.value = '';
+                  }
+                }}>
+                <i class="fa-solid fa-user-plus"></i> Add
+              </button>
+            </div>
+
+            <!-- Assigned Members List -->
+            <div>
+              <h3 style="font-size:0.95rem;font-weight:700;margin-bottom:0.75rem;color:var(--text-primary);">Assigned Members (${assignedMembers.length})</h3>
+              
+              ${assignedMembers.length === 0 ? html`
+                <div style="text-align:center;padding:2rem;background:rgba(255,255,255,0.01);border:1px dashed var(--border-color);border-radius:8px;color:var(--text-secondary);font-size:0.9rem;">
+                  No members assigned yet. Project leads and admins can manage tasks globally, but team members must be assigned to create/self-assign tasks.
+                </div>
+              ` : html`
+                <div style="display:flex;flex-direction:column;gap:0.75rem;">
+                  ${assignedMembers.map(m => html`
+                    <div style="display:flex;flex-direction:column;gap:0.75rem;padding:1rem;background:rgba(255,255,255,0.02);border:1px solid var(--border-color);border-radius:8px;" key=${m.user_id}>
+                      <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div style="display:flex;align-items:center;gap:0.5rem;">
+                          <div class="avatar" style="width:28px;height:28px;font-size:0.75rem;">${getInitials(m.username)}</div>
+                          <span style="font-weight:700;color:var(--text-primary);">${m.username}</span>
+                        </div>
+                        <button type="button" class="btn" style="padding:0.25rem 0.6rem;background:rgba(239,68,68,0.1);color:#f87171;border:1px solid rgba(239,68,68,0.2);"
+                          onClick=${() => removeMember(m.user_id)}>
+                          <i class="fa-solid fa-user-minus" style="margin-right:0.3rem;"></i> Remove
+                        </button>
+                      </div>
+                      
+                      <div>
+                        <span style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-secondary);display:block;margin-bottom:0.4rem;">Phase Permissions</span>
+                        <div style="display:flex;flex-wrap:wrap;gap:0.75rem;">
+                          ${phases.map(ph => {
+                            const isChecked = m.assigned_phases.includes(ph);
+                            const phaseObj = getPhasesObj().find(p => p.name === ph);
+                            const pColor = phaseObj ? phaseObj.color_class : 'color-slate';
+                            return html`
+                              <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.8rem;color:var(--text-primary);cursor:pointer;background:rgba(0,0,0,0.15);padding:0.3rem 0.5rem;border-radius:6px;border:1px solid ${isChecked ? 'var(--accent-purple)' : 'transparent'};">
+                                <input type="checkbox" checked=${isChecked} onChange=${() => toggleMemberPhase(m.user_id, ph)} style="accent-color:var(--accent-purple);" />
+                                <span class=${`badge ${pColor}`} style="font-size:0.68rem;padding:0.1rem 0.3rem;">${ph}</span>
+                              </label>
+                            `;
+                          })}
+                        </div>
+                        ${m.assigned_phases.length === 0 && html`
+                          <div style="font-size:0.72rem;color:var(--accent-green);margin-top:0.4rem;">
+                            <i class="fa-solid fa-circle-check"></i> Allowed in all phases by default
+                          </div>
+                        `}
+                      </div>
+                    </div>
+                  `)}
+                </div>
+              `}
+            </div>
+          </div>
+        `}
       </div>
 
       <div class="wizard-footer">
@@ -527,7 +666,7 @@ export const CreateProjectTab = ({ onSave, currentUser }) => {
         <div style="display:flex;gap:0.75rem;align-items:center;">
           <button type="button" class="btn" style="padding:0.5rem 1.25rem;" onClick=${onSave} disabled=${isSaving}>Cancel</button>
           
-          ${wizardStep < 3 ? html`
+          ${wizardStep < 4 ? html`
             <button type="button" class="btn active" style="background:var(--accent-blue);padding:0.5rem 1.25rem;" onClick=${handleNext}>
               Next <i class="fa-solid fa-chevron-right" style="margin-left:0.4rem;"></i>
             </button>
@@ -586,14 +725,15 @@ export const ProjectDetailCore = ({ project, currentUser, tasks, onClose, onUpda
   const isAdmin = hasPermission(currentUser, 'admin.panel');
   const isLeader = hasPermission(currentUser, 'task.approve');
   const isOwner = currentUser.team === project.team;
-  const canEdit = hasPermission(currentUser, 'project.update');
+  const isProjectLead = currentUser?.id === project.project_lead_id;
+  const canEdit = hasPermission(currentUser, 'project.update') || isProjectLead;
   const canDelete = hasPermission(currentUser, 'project.delete');
 
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [showSaved, setShowSaved] = useState(false);
   const [streams, setStreams] = useState([]);
-  const [editForm, setEditForm] = useState({ ...project, project_lead: project.project_lead || '', actual_end_date: project.actual_end_date || '', launch_note: project.launch_note || '' });
+  const [editForm, setEditForm] = useState({ ...project, project_lead: project.project_lead || '', actual_end_date: project.actual_end_date || '', launch_note: project.launch_note || '', members: project.members || [], shortcuts: project.shortcuts || [] });
   const [newComment, setNewComment] = useState('');
 
   const fetchStreams = async () => {
@@ -602,7 +742,7 @@ export const ProjectDetailCore = ({ project, currentUser, tasks, onClose, onUpda
   };
 
   useEffect(() => {
-    setEditForm({ ...project, project_lead: project.project_lead || '', actual_end_date: project.actual_end_date || '', launch_note: project.launch_note || '' });
+    setEditForm({ ...project, project_lead: project.project_lead || '', actual_end_date: project.actual_end_date || '', launch_note: project.launch_note || '', members: project.members || [], shortcuts: project.shortcuts || [] });
     setIsEditing(false);
     setNewComment('');
     fetchStreams();
@@ -649,6 +789,20 @@ export const ProjectDetailCore = ({ project, currentUser, tasks, onClose, onUpda
         body: JSON.stringify(payload)
       });
       if (!res.ok) { await appAlert('Save failed — check server logs.', 'Save Failed'); return; }
+      
+      const isProjectLead = currentUser?.id === project.project_lead_id;
+      const isLeadOrAdmin = isProjectLead || isAdmin;
+      if (isLeadOrAdmin) {
+        const membersRes = await apiFetch(`/api/projects/${project.id}/members`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ members: editForm.members || [] })
+        });
+        if (!membersRes.ok) {
+          await appAlert('Project saved, but updating members failed.', 'Warning');
+        }
+      }
+
       logAudit(currentUser, 'PROJECT_UPDATED',
         `Updated project ${project.id}. Production: ${payload.is_deployed ? 'YES' : 'NO'}`);
       setEditForm(payload);
@@ -757,6 +911,79 @@ export const ProjectDetailCore = ({ project, currentUser, tasks, onClose, onUpda
           }
         </div>
 
+        <!-- Bookmarks Section -->
+        <div class="info-block" style="background:transparent;padding:0;border:none;margin-bottom:1.5rem;">
+          <div class="section-title" style="margin-bottom:0.75rem;">
+            <i class="fa-solid fa-bookmark"></i> Project Bookmarks
+          </div>
+          
+          ${(isEditing && canEdit) && html`
+            <div style="margin-bottom: 1rem; background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); padding: 0.75rem; border-radius: 6px; display:flex; flex-direction:column; gap:0.5rem;">
+              <div style="font-size:0.72rem; color:var(--text-secondary); font-weight:700;">ADD CUSTOM BOOKMARK</div>
+              <div style="display:flex; gap:0.5rem;">
+                <input type="text" id="detail-shortcut-title" placeholder="Link Title (e.g. Design Doc)" class="form-input" style="font-size:0.8rem; padding:0.25rem 0.5rem; background:rgba(0,0,0,0.25); flex: 1;" />
+                <input type="text" id="detail-shortcut-url" placeholder="URL (e.g. docs.google.com/xyz)" class="form-input" style="font-size:0.8rem; padding:0.25rem 0.5rem; background:rgba(0,0,0,0.25); flex: 2;" />
+                <button type="button" class="btn active" style="background:var(--accent-purple); font-size:0.75rem; padding:0 1rem; font-weight:600;"
+                  onClick=${() => {
+                    const titleEl = document.getElementById('detail-shortcut-title');
+                    const urlEl = document.getElementById('detail-shortcut-url');
+                    if (!titleEl || !urlEl || !titleEl.value.trim() || !urlEl.value.trim()) return;
+                    
+                    const title = titleEl.value.trim();
+                    let url = urlEl.value.trim();
+                    if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+                    
+                    const currentShortcuts = editForm.shortcuts || [];
+                    const updatedShortcuts = [...currentShortcuts, { title, url, icon: detectUrlIcon(url) }];
+                    
+                    setEditForm({
+                      ...editForm,
+                      shortcuts: updatedShortcuts
+                    });
+                    
+                    titleEl.value = '';
+                    urlEl.value = '';
+                  }}>
+                  Add
+                </button>
+              </div>
+            </div>
+          `}
+
+          ${(isEditing ? (editForm.shortcuts || []) : (project.shortcuts || [])).length === 0 ? html`
+            <div style="text-align:center; padding:1.5rem; color:var(--text-secondary); border:1px dashed var(--border-color); border-radius:6px; font-size:0.82rem; line-height:1.4;">
+              No bookmarks added yet. Project leads can add reference links, wiki pages, or requirements docs.
+            </div>
+          ` : html`
+            <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:0.75rem;">
+              ${(isEditing ? (editForm.shortcuts || []) : (project.shortcuts || [])).map((sh, idx) => html`
+                <div style="padding:0.6rem 0.8rem; background:var(--bg-panel); border:1px solid var(--border-color); border-radius:6px; display:flex; justify-content:space-between; align-items:center; gap:0.5rem; transition: border-color 0.15s;"
+                  onMouseEnter=${e => e.currentTarget.style.borderColor='rgba(59,130,246,0.3)'}
+                  onMouseLeave=${e => e.currentTarget.style.borderColor='var(--border-color)'}>
+                  <a href=${sh.url} target="_blank" style="color:var(--accent-blue); text-decoration:none; font-weight:600; font-size:0.82rem; display:flex; align-items:center; gap:0.4rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title=${sh.url}>
+                    <i class="${sh.icon || 'fa-solid fa-link'}" style="font-size:0.85rem; flex-shrink:0;"></i>
+                    <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${sh.title}</span>
+                  </a>
+                  ${(isEditing && canEdit) && html`
+                    <button class="btn" style="padding:0.15rem 0.35rem; font-size:0.65rem; border:1px solid var(--accent-pink); color:var(--accent-pink); background:none; flex-shrink:0;"
+                      onClick=${async () => {
+                        const confirmed = await appConfirm(`Are you sure you want to delete bookmark "${sh.title}"?`, "Delete Bookmark");
+                        if (!confirmed) return;
+                        const updated = (editForm.shortcuts || []).filter((_, i) => i !== idx);
+                        setEditForm({
+                          ...editForm,
+                          shortcuts: updated
+                        });
+                      }}>
+                      <i class="fa-solid fa-xmark"></i>
+                    </button>
+                  `}
+                </div>
+              `)}
+            </div>
+          `}
+        </div>
+
         <div class="info-block" style="background:transparent;padding:0;border:none;margin-bottom:1.5rem;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
             <div class="section-title" style="margin:0;"><i class="fa-solid fa-list-check"></i> Project Tasks</div>
@@ -834,7 +1061,7 @@ export const ProjectDetailCore = ({ project, currentUser, tasks, onClose, onUpda
               <div style="height:1px;background:rgba(255,255,255,0.05);margin:0.1rem 0;"></div>
             `}
             
-            ${isEditing && isAdmin && html`
+            ${isEditing && (isAdmin || isProjectLead) && html`
               <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
                 <span style="color:var(--text-secondary);font-size:0.85rem;"><i class="fa-solid fa-user-shield" style="width:16px;"></i> Project Lead</span>
                 <select class="form-select" style="font-size:0.85rem;padding:0.25rem 0.5rem;" value=${editForm.project_lead || ''} onChange=${e => setEditForm({...editForm, project_lead: e.target.value})}>
@@ -843,7 +1070,7 @@ export const ProjectDetailCore = ({ project, currentUser, tasks, onClose, onUpda
                 </select>
               </div>
             `}
-            ${!isEditing && html`
+            ${(!isEditing || (!isAdmin && !isProjectLead)) && html`
               <div style="display:flex;justify-content:space-between;align-items:center;">
                 <span style="color:var(--text-secondary);font-size:0.85rem;"><i class="fa-solid fa-user-shield" style="width:16px;"></i> Project Lead</span>
                 <strong style="font-size:0.9rem;">${project.project_lead || '—'}</strong>
@@ -914,6 +1141,122 @@ export const ProjectDetailCore = ({ project, currentUser, tasks, onClose, onUpda
           </div>
         </div>
 
+        <!-- Project Team Members Info Block -->
+        <div class="info-block" style="padding:1.5rem;background:var(--bg-panel);border:1px solid var(--border-color);border-radius:var(--radius-md);margin-top:1.5rem;margin-bottom:1.5rem;">
+          <div class="section-title" style="margin-bottom:0.75rem;"><i class="fa-solid fa-users"></i> Project Team Members</div>
+          
+          ${(() => {
+            const isProjectLead = currentUser?.id === project.project_lead_id;
+            const isLeadOrAdmin = isProjectLead || isAdmin;
+            const phases = getPhases() || [];
+            
+            if (isEditing && isLeadOrAdmin) {
+              return html`
+                <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:1rem;background:rgba(0,0,0,0.15);padding:0.55rem;border-radius:6px;border:1px solid var(--border-color);">
+                  <select id="edit-member-select" class="form-select" style="font-size:0.8rem;flex:1;padding:0.25rem;">
+                    <option value="">— Add Member —</option>
+                    ${getUsersObj()
+                      .filter(u => u.username !== 'admin' && !(editForm.members || []).some(m => m.user_id === u.id))
+                      .map(u => html`<option value=${u.id} key=${u.id}>${u.username}</option>`)}
+                  </select>
+                  <button type="button" class="btn active" style="background:var(--accent-purple);padding:0.3rem 0.6rem;font-size:0.78rem;"
+                    onClick=${() => {
+                      const selEl = document.getElementById('edit-member-select');
+                      if (selEl && selEl.value) {
+                        const uId = parseInt(selEl.value);
+                        const userObj = getUsersObj().find(u => u.id === uId);
+                        if (userObj) {
+                          const updatedMembers = [...(editForm.members || []), {
+                            user_id: userObj.id,
+                            username: userObj.username,
+                            assigned_phases: []
+                          }];
+                          setEditForm({ ...editForm, members: updatedMembers });
+                        }
+                        selEl.value = '';
+                      }
+                    }}>
+                    <i class="fa-solid fa-plus"></i>
+                  </button>
+                </div>
+                
+                <div style="display:flex;flex-direction:column;gap:0.75rem;max-height:250px;overflow-y:auto;padding-right:0.25rem;">
+                  ${(editForm.members || []).length === 0 ? html`
+                    <div style="font-size:0.8rem;color:var(--text-secondary);text-align:center;padding:0.5rem;">No members assigned.</div>
+                  ` : (editForm.members || []).map(m => html`
+                    <div style="background:rgba(255,255,255,0.01);border:1px solid var(--border-color);padding:0.6rem;border-radius:6px;" key=${m.user_id}>
+                      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
+                        <span style="font-size:0.85rem;font-weight:700;color:var(--text-primary);">${m.username}</span>
+                        <button type="button" class="btn" style="padding:0.15rem 0.4rem;font-size:0.7rem;background:rgba(239,68,68,0.1);color:#f87171;border:1px solid rgba(239,68,68,0.15);"
+                          onClick=${() => {
+                            const updatedMembers = (editForm.members || []).filter(mem => mem.user_id !== m.user_id);
+                            setEditForm({ ...editForm, members: updatedMembers });
+                          }}>
+                          Remove
+                        </button>
+                      </div>
+                      <div style="font-size:0.75rem;">
+                        <div style="color:var(--text-secondary);margin-bottom:0.25rem;">Allowed Phases:</div>
+                        <div style="display:flex;flex-wrap:wrap;gap:0.35rem;">
+                          ${phases.map(ph => {
+                            const isChecked = (m.assigned_phases || []).includes(ph);
+                            return html`
+                              <label style="display:flex;align-items:center;gap:0.2rem;font-size:0.72rem;color:var(--text-primary);cursor:pointer;background:rgba(0,0,0,0.1);padding:0.15rem 0.3rem;border-radius:4px;border:1px solid ${isChecked ? 'var(--accent-purple)' : 'transparent'};">
+                                <input type="checkbox" checked=${isChecked}
+                                  onChange=${() => {
+                                    const updatedMembers = (editForm.members || []).map(mem => {
+                                      if (mem.user_id === m.user_id) {
+                                        const hasPhase = (mem.assigned_phases || []).includes(ph);
+                                        const newPhases = hasPhase
+                                          ? mem.assigned_phases.filter(p => p !== ph)
+                                          : [...(mem.assigned_phases || []), ph];
+                                        return { ...mem, assigned_phases: newPhases };
+                                      }
+                                      return mem;
+                                    });
+                                    setEditForm({ ...editForm, members: updatedMembers });
+                                  }} />
+                                <span>${ph.split(' ')[0]}</span>
+                              </label>
+                            `;
+                          })}
+                        </div>
+                        ${(!m.assigned_phases || m.assigned_phases.length === 0) && html`
+                          <div style="font-size:0.72rem;color:var(--accent-green);margin-top:0.4rem;">
+                            <i class="fa-solid fa-circle-check"></i> Allowed in all phases by default
+                          </div>
+                        `}
+                      </div>
+                    </div>
+                  `)}
+                </div>
+              `;
+            } else {
+              return html`
+                <div style="display:flex;flex-direction:column;gap:0.5rem;">
+                  ${(project.members || []).length === 0 ? html`
+                    <div style="font-size:0.82rem;color:var(--text-secondary);text-align:center;padding:0.75rem;background:rgba(255,255,255,0.01);border:1px dashed var(--border-color);border-radius:6px;">
+                      No members explicitly assigned. Leads and admins manage the project.
+                    </div>
+                  ` : (project.members || []).map(m => html`
+                    <div style="display:flex;align-items:flex-start;justify-content:space-between;padding:0.5rem 0.6rem;background:rgba(255,255,255,0.02);border:1px solid var(--border-color);border-radius:6px;" key=${m.user_id}>
+                      <div>
+                        <div style="display:flex;align-items:center;gap:0.4rem;">
+                          <div class="avatar" style="width:20px;height:20px;font-size:0.6rem;">${getInitials(m.username)}</div>
+                          <span style="font-size:0.85rem;font-weight:600;color:var(--text-primary);">${m.username}</span>
+                        </div>
+                        <div style="font-size:0.72rem;color:var(--text-secondary);margin-top:0.25rem;line-height:1.3;">
+                          Phases: ${(!m.assigned_phases || m.assigned_phases.length === 0) ? html`<strong style="color:var(--accent-green);">All Phases</strong>` : m.assigned_phases.join(', ')}
+                        </div>
+                      </div>
+                    </div>
+                  `)}
+                </div>
+              `;
+            }
+          })()}
+        </div>
+
         ${!isEditing && canEdit && html`
           <div style="margin-bottom:1.5rem; border:1px solid rgba(139,92,246,0.3); border-radius:var(--radius-md); padding:1.25rem; background:linear-gradient(145deg, rgba(139,92,246,0.05), rgba(0,0,0,0.2));">
             <div style="font-size:0.9rem; font-weight:700; margin-bottom:0.75rem; color:var(--text-primary); display:flex; align-items:center; gap:0.5rem;">
@@ -947,21 +1290,23 @@ export const ProjectDetailCore = ({ project, currentUser, tasks, onClose, onUpda
     </div>
   `;
 
-  const footerContent = html`
-    <div style="display:flex;gap:0.5rem;width:100%;${isModal ? '' : 'margin-top:2rem;padding-top:1.5rem;border-top:1px solid var(--border-color);'}">
+  const actionButtons = html`
+    <div style="display:flex;gap:0.5rem;align-items:center;flex-shrink:0;">
       ${isEditing && canDelete && html`
-        <button class="btn" style="background:var(--accent-pink);color:#fff;margin-right:auto;" onClick=${handleDelete} disabled=${isSaving}>
+        <button class="btn" style="background:var(--accent-pink);color:#fff;" onClick=${handleDelete} disabled=${isSaving}>
           <i class="fa-solid fa-trash-can"></i> Delete Project
         </button>
       `}
-      ${!isEditing && canEdit && html`<button class="btn" style="background:var(--bg-panel);border:1px solid var(--border-color);${isEditing && canDelete ? '' : 'margin-left:auto;'}" onClick=${() => setIsEditing(true)}><i class="fa-solid fa-pen"></i> Edit Details</button>`}
+      ${!isEditing && canEdit && html`
+        <button class="btn" style="background:var(--bg-panel);border:1px solid var(--border-color);" onClick=${() => setIsEditing(true)}>
+          <i class="fa-solid fa-pen"></i> Edit Details
+        </button>
+      `}
       ${isEditing && html`
-        <div style=${`display:flex;gap:0.5rem;${isEditing && canDelete ? '' : 'margin-left:auto;'}`}>
-          <button class="btn" style="color:var(--text-secondary);" onClick=${() => setIsEditing(false)} disabled=${isSaving}>Discard</button>
-          <button class="btn active" style="background:var(--accent-blue);" onClick=${handleSave} disabled=${isSaving}>
-            ${isSaving ? html`<i class="fa-solid fa-spinner fa-spin"></i> Saving...` : html`<i class="fa-solid fa-save"></i> Save Changes`}
-          </button>
-        </div>
+        <button class="btn" style="color:var(--text-secondary);" onClick=${() => setIsEditing(false)} disabled=${isSaving}>Discard</button>
+        <button class="btn active" style="background:var(--accent-blue);" onClick=${handleSave} disabled=${isSaving}>
+          ${isSaving ? html`<i class="fa-solid fa-spinner fa-spin"></i> Saving...` : html`<i class="fa-solid fa-save"></i> Save Changes`}
+        </button>
       `}
     </div>
   `;
@@ -975,12 +1320,12 @@ export const ProjectDetailCore = ({ project, currentUser, tasks, onClose, onUpda
         subtitle=${project.id + ' — ' + (project.title || '')}
         icon="fa-folder-tree"
         accentColor="var(--accent-blue)"
-        footer=${footerContent}
+        footer=${null}
         maxWidth="1100px"
       >
         ${showSaved && html`<div class="focus-success"><i class="fa-solid fa-check-circle" style="margin-right:0.5rem;"></i> Changes saved successfully!</div>`}
         
-        <div style="margin-bottom:1.5rem;padding-bottom:1.5rem;border-bottom:1px solid var(--border-color);display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;">
+        <div style="margin-bottom:1.5rem;padding-bottom:1.5rem;border-bottom:1px solid var(--border-color);display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
           <div style="flex:1;min-width:0;">
             ${isEditing 
               ? html`<input class="form-input" style="font-size:1.4rem;font-weight:800;width:100%;margin-bottom:0.6rem;" value=${editForm.title} onInput=${e => setEditForm({...editForm, title: e.target.value})} />`
@@ -992,6 +1337,7 @@ export const ProjectDetailCore = ({ project, currentUser, tasks, onClose, onUpda
               ${isIterating && html`<span class="tag color-ds" style="font-size:0.65rem;">ITERATION v${iterationNum}</span>`}
             </div>
           </div>
+          ${actionButtons}
         </div>
 
         ${coreBody}
@@ -1015,7 +1361,7 @@ export const ProjectDetailCore = ({ project, currentUser, tasks, onClose, onUpda
           </button>
         </div>
 
-        <div style="margin-bottom:1.5rem;padding-bottom:1.5rem;border-bottom:1px solid var(--border-color);display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;">
+        <div style="margin-bottom:1.5rem;padding-bottom:1.5rem;border-bottom:1px solid var(--border-color);display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
           <div style="flex:1;min-width:0;">
             ${isEditing 
               ? html`<input class="form-input" style="font-size:1.4rem;font-weight:800;width:100%;margin-bottom:0.6rem;" value=${editForm.title} onInput=${e => setEditForm({...editForm, title: e.target.value})} />`
@@ -1027,11 +1373,10 @@ export const ProjectDetailCore = ({ project, currentUser, tasks, onClose, onUpda
               ${isIterating && html`<span class="tag color-ds" style="font-size:0.65rem;">ITERATION v${iterationNum}</span>`}
             </div>
           </div>
+          ${actionButtons}
         </div>
 
         ${coreBody}
-
-        ${footerContent}
       </div>
     `;
   }

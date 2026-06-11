@@ -11,7 +11,7 @@ import { TeamPoolView, TaskDetailModal, TeamDashboardView, MyTasksView, Approval
 import { AuditLogTab } from './AuditLog.js';
 import { ProjectAnalyticsTab, TaskMonitoringTab } from './Analytics.js';
 import { NotificationBell } from './NotificationBell.js';
-import { CommandPalette } from './CommandPalette.js';
+import { ProjectLeadDashboard } from './ProjectLeadDashboard.js';
 
 import { h } from 'https://esm.sh/preact';
 import { useState, useEffect, useMemo, useRef } from 'https://esm.sh/preact/hooks';
@@ -386,6 +386,7 @@ export const App = () => {
       case 'manage': return 'Manage';
       case 'new-project': return 'New Project';
       case 'admin': return 'Admin';
+      case 'lead_dashboard': return 'My Lead Projects';
       default: return id;
     }
   };
@@ -407,6 +408,7 @@ export const App = () => {
       case 'manage': return 'fa-server';
       case 'new-project': return 'fa-plus';
       case 'admin': return 'fa-shield';
+      case 'lead_dashboard': return 'fa-crown';
       default: return 'fa-circle';
     }
   };
@@ -603,6 +605,7 @@ export const App = () => {
   if (!authChecked) return html`<div style="padding:2rem;text-align:center;">Loading...</div>`;
   if (!currentUser) return html`<${LoginScreen} onLogin=${handleLogin} />`;
 
+  const isLeaderOrAdmin = currentUser.role === 'admin' || currentUser.role === 'leader';
   const canReadProjects = hasPermission(currentUser, 'project.read') || hasPermission(currentUser, 'analytics.read_all');
   const canReadAnalytics = hasPermission(currentUser, 'analytics.read_team') || hasPermission(currentUser, 'analytics.read_all');
   const canApproveTasks = hasPermission(currentUser, 'task.approve') || hasPermission(currentUser, 'task.review_accept') || hasPermission(currentUser, 'task.review_finish');
@@ -614,6 +617,8 @@ export const App = () => {
 
   const getSidebarGroups = () => {
     const groups = [];
+    const isProjectLeadOnAny = (projectsList || []).some(p => p.project_lead_id === currentUser.id);
+
     if (canReadProjects) {
       groups.push({
         heading: 'Projects',
@@ -629,13 +634,23 @@ export const App = () => {
         { id: 'my_tasks', label: 'My Tasks', icon: 'fa-list-check' },
         { id: 'team_pool', label: 'Team Pool', icon: 'fa-inbox' }
       ];
-      if (canReadAnalytics) {
+      if (canReadAnalytics && isLeaderOrAdmin) {
         items.push({ id: 'team_dashboard', label: 'Team Dash', icon: 'fa-people-group' });
       }
-      if (canApproveTasks) {
-        items.push({ id: 'approvals', label: 'Approvals', icon: 'fa-check-to-slot' });
+      if (isLeaderOrAdmin) {
+        if (canApproveTasks || isProjectLeadOnAny) {
+          items.push({ id: 'approvals', label: 'Approvals', icon: 'fa-check-to-slot' });
+        }
       }
       groups.push({ heading: 'Tasks', items });
+    }
+    if (isProjectLeadOnAny) {
+      groups.push({
+        heading: 'Project Lead',
+        items: [
+          { id: 'lead_dashboard', label: 'My Lead Projects', icon: 'fa-crown' }
+        ]
+      });
     }
     if (canReadAnalytics || hasPermission(currentUser, 'analytics.read_own')) {
       const items = [
@@ -708,6 +723,8 @@ export const App = () => {
         return html`<${ProjectAnalyticsTab} projects=${projectsList} tasks=${tasksList} currentUser=${currentUser} />`;
       case 'comms':
         return html`<${CommunicationsTab} currentUser=${currentUser} tasks=${tasksList} projects=${projectsList} />`;
+      case 'lead_dashboard':
+        return html`<${ProjectLeadDashboard} projects=${projectsList} tasks=${tasksList} users=${usersList} currentUser=${currentUser} fetchTasks=${fetchTasks} fetchProjects=${fetchProjects} setActiveTab=${(tabName) => openTab(tabName, getTabLabel(tabName), getTabIcon(tabName))} openTab=${openTab} />`;
       default:
         return html`<div style="padding:2rem;">Tab content not found: ${id}</div>`;
     }

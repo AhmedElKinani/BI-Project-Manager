@@ -94,8 +94,8 @@ def seed_production_admin() -> None:
         # Roles
         roles = [
             ("admin", "Administrator", True),
-            ("leader", "Team Leader", True),
-            ("member", "Team Member", True)
+            ("leader", "Lead", True),
+            ("member", "Member", True)
         ]
         
         for name, label, is_system in roles:
@@ -109,10 +109,13 @@ def seed_production_admin() -> None:
         member_role = db.query(Role).filter_by(name="member").first()
         all_perms = db.query(Permission).all()
 
+        # Clear existing role-permission mappings for a clean update
+        db.query(RolePermission).delete()
+        db.commit()
+
         # Admin gets all
         for p in all_perms:
-            if not db.query(RolePermission).filter_by(role_id=admin_role.id, permission_id=p.id).first():
-                db.add(RolePermission(role_id=admin_role.id, permission_id=p.id))
+            db.add(RolePermission(role_id=admin_role.id, permission_id=p.id))
         
         # Leader gets specific
         leader_codes = [
@@ -124,13 +127,12 @@ def seed_production_admin() -> None:
             "can_create:Task", "can_read:Task", "can_write:Task", "can_delete:Task", "can_approve:Task", "can_accept:Task", "can_finish:Task", "can_block:Task",
             "can_read:Project", "can_write:Project", "can_manage:Project", "can_submit_phase:Project", "can_manage_status:Project",
             "can_read_team:Task", "can_read_own:Task", "menu_access:Comms", "can_create:Message",
-            "can_read_all_tasks:Task", "can_read_team_tasks:Task", "can_read_own_tasks:Task", "can_read_all_phases:Phase", "can_read_team_phases:Phase",
+            "can_read_team_tasks:Task", "can_read_own_tasks:Task", "can_read_all_phases:Phase", "can_read_team_phases:Phase",
             "can_read_all_projects:Project", "can_read_team_projects:Project", "can_read_own_projects:Project"
         ]
         for p in all_perms:
             if p.code in leader_codes:
-                if not db.query(RolePermission).filter_by(role_id=leader_role.id, permission_id=p.id).first():
-                    db.add(RolePermission(role_id=leader_role.id, permission_id=p.id))
+                db.add(RolePermission(role_id=leader_role.id, permission_id=p.id))
 
         # Member gets specific
         member_codes = [
@@ -140,13 +142,12 @@ def seed_production_admin() -> None:
             # Apache Superset equivalents
             "can_create:Task", "can_read:Task", "can_write:Task", "can_block:Task", "can_read:Project",
             "can_read_own:Task", "menu_access:Comms", "can_create:Message",
-            "can_read_all_tasks:Task", "can_read_own_tasks:Task", "can_read_team_tasks:Task", "can_read_team_phases:Phase",
-            "can_read_all_projects:Project", "can_read_team_projects:Project", "can_read_own_projects:Project"
+            "can_read_own_tasks:Task", "can_read_team_tasks:Task", "can_read_team_phases:Phase",
+            "can_read_team_projects:Project", "can_read_own_projects:Project"
         ]
         for p in all_perms:
             if p.code in member_codes:
-                if not db.query(RolePermission).filter_by(role_id=member_role.id, permission_id=p.id).first():
-                    db.add(RolePermission(role_id=member_role.id, permission_id=p.id))
+                db.add(RolePermission(role_id=member_role.id, permission_id=p.id))
         
         db.commit()
 

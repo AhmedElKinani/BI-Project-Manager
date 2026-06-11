@@ -867,8 +867,18 @@ export const TaskFocusModal = ({ open, onClose, projects, currentUser, editingTa
   const selectedProject = projects?.find(p => p.id === form.project_id);
   const isCompleted = selectedProject && (selectedProject.status === 'completed' || selectedProject.computed_progress === 100);
 
-  // Phases available based on role
+  // Phases available based on role and project member assignment
   const allowedPhases = (() => {
+    if (isMember && selectedProject) {
+      const memberAssg = selectedProject.members?.find(m => m.user_id === currentUser.id);
+      if (memberAssg) {
+        if (memberAssg.assigned_phases && memberAssg.assigned_phases.length > 0) {
+          return memberAssg.assigned_phases;
+        } else {
+          return getPhases();
+        }
+      }
+    }
     const teamPhases = getTeamPhases(currentUser?.team) || [];
     if (isAdmin) return getPhases();
     return teamPhases.length > 0 ? teamPhases : getPhases();
@@ -1368,10 +1378,28 @@ export const TaskFocusModal = ({ open, onClose, projects, currentUser, editingTa
                 const pid = e.target.value;
                 const proj = projects?.find(p => p.id === pid);
                 const completed = proj && (proj.status === 'completed' || proj.computed_progress === 100);
-                setForm({...form, project_id: pid, post_production: !!completed});
+                
+                // If member, adjust phase to a permitted one for the new project if needed
+                let newPhase = form.crisp_dm_phase;
+                if (isMember && proj) {
+                  const memberAssg = proj.members?.find(m => m.user_id === currentUser.id);
+                  if (memberAssg && memberAssg.assigned_phases && memberAssg.assigned_phases.length > 0) {
+                    if (!memberAssg.assigned_phases.includes(newPhase)) {
+                      newPhase = memberAssg.assigned_phases[0] || '';
+                    }
+                  }
+                }
+                setForm({...form, project_id: pid, post_production: !!completed, crisp_dm_phase: newPhase});
               }}>
               <option value="">— Select Project —</option>
-              ${(projects || []).map(p => html`<option value=${p.id}>${p.id} — ${p.title}</option>`)}
+              ${((projects || []).filter(p => {
+                if (isMember) {
+                  const isAssigned = p.members?.some(m => m.user_id === currentUser.id);
+                  const isCurrentProj = editingTask && p.id === editingTask.project_id;
+                  return isAssigned || isCurrentProj;
+                }
+                return true;
+              })).map(p => html`<option value=${p.id}>${p.id} — ${p.title}</option>`)}
             </select>
             ${isCompleted && html`
               <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.75rem;margin-top:0.5rem;color:var(--accent-purple);cursor:pointer;">
