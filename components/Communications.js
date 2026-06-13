@@ -828,7 +828,9 @@ export const App = () => {
                 onClick=${toggleContrast} title=${highContrast ? "Disable High Contrast" : "Enable High Contrast (Accessibility)"}>
                 <i class="fa-solid fa-universal-access"></i>
               </button>
-              <${NotificationBell} currentUser=${currentUser} />
+              <${NotificationBell} currentUser=${currentUser}
+                onNavigate=${(tabId, data) => openTab(tabId, 'My Tasks', 'fa-list-check', 'module', data)}
+              />
               <div style="line-height:1.2;font-size:0.82rem;text-align:right;">
                 <div><strong>${currentUser.username}</strong></div>
                 <div style="font-size:0.68rem;text-transform:uppercase;opacity:0.7;">${currentUser.role}</div>

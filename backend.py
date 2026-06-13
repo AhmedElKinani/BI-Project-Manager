@@ -599,7 +599,8 @@ def create_user(body: dict, user_id: int = Depends(get_current_user_id), db: Ses
             user_id=new_user.id,
             message=f"Welcome to BI Project Manager, {username}! Your account has been initialized.",
             related_task_id=None,
-            db=db
+            db=db,
+            category='general'
         )
         db.commit()
                 
@@ -646,7 +647,8 @@ def update_user(target_uid: int, body: dict, user_id: int = Depends(get_current_
         user_id=user.id,
         message=f"Your profile settings have been updated (Role: {role_name or 'unaltered'}, Team: {team_name or 'unaltered'}) by {actor_username}.",
         related_task_id=None,
-        db=db
+        db=db,
+        category='admin'
     )
     db.commit()
     
@@ -796,7 +798,7 @@ def update_config_role(r_id: int, body: dict, user_id: int = Depends(get_current
     actor_name = actor.username if actor else "an administrator"
     role_users = db.query(User).filter(User.role_id == r_id).all()
     for u in role_users:
-        trigger_notification(u.id, f"The settings/permissions for your role '{role.label or role.name}' have been updated by {actor_name}.", None, db)
+        trigger_notification(u.id, f"The settings/permissions for your role '{role.label or role.name}' have been updated by {actor_name}.", None, db, category='admin')
     db.commit()
     return {"status": "ok"}
 
@@ -866,7 +868,7 @@ def update_role_permissions(role_id: int, body: dict, user_id: int = Depends(get
     db.commit()
     role_users = db.query(User).filter(User.role_id == role_id).all()
     for u in role_users:
-        trigger_notification(u.id, f"The security permission matrix for your role '{role.label or role.name}' has been updated.", None, db)
+        trigger_notification(u.id, f"The security permission matrix for your role '{role.label or role.name}' has been updated.", None, db, category='admin')
     db.commit()
     return {"status": "ok"}
 
@@ -985,7 +987,8 @@ def create_project(body: dict, user_id: int = Depends(get_current_user_id), db: 
                 user_id=new_proj.assignee_id,
                 message=f"You have been assigned as primary assignee for project: {new_proj.title}.",
                 related_task_id=None,
-                db=db
+                db=db,
+                category='project'
             )
             db.commit()
         
@@ -1099,7 +1102,8 @@ def update_project(body: dict, user_id: int = Depends(get_current_user_id), db: 
                 user_id=proj.assignee_id,
                 message=f"You have been assigned as primary assignee for project: {proj.title} by {actor_username}.",
                 related_task_id=None,
-                db=db
+                db=db,
+                category='project'
             )
             
         if proj.phase_id and proj.phase_id != orig_phase_id:
@@ -1114,7 +1118,7 @@ def update_project(body: dict, user_id: int = Depends(get_current_user_id), db: 
                 for tu in team_users:
                     recipients.add(tu.id)
             for r_id in recipients:
-                trigger_notification(r_id, msg, None, db)
+                trigger_notification(r_id, msg, None, db, category='project')
                 
         if proj.blockers and proj.blockers != orig_blockers:
             if proj.assignee_id:
@@ -1122,7 +1126,8 @@ def update_project(body: dict, user_id: int = Depends(get_current_user_id), db: 
                     user_id=proj.assignee_id,
                     message=f"A new blocker has been flagged on your project '{proj.title}': {proj.blockers}.",
                     related_task_id=None,
-                    db=db
+                    db=db,
+                    category='project'
                 )
         db.commit()
         
@@ -1160,7 +1165,8 @@ def delete_project(p_id: str, user_id: int = Depends(get_current_user_id), db: S
             user_id=proj.assignee_id,
             message=f"Project '{proj.title}' has been deleted by {actor_username}.",
             related_task_id=None,
-            db=db
+            db=db,
+            category='project'
         )
         db.commit()
     db.delete(proj)
@@ -1983,7 +1989,8 @@ def create_task(body: dict, user_id: int = Depends(get_current_user_id), db: Ses
                 user_id=pending_notif_lead_id,
                 message=f"User '{u.username}' submitted a task '{new_task.title}' for your approval on project '{project.title}'.",
                 related_task_id=new_task.id,
-                db=db
+                db=db,
+                category='task'
             )
             db.commit()
             
@@ -2000,7 +2007,8 @@ def create_task(body: dict, user_id: int = Depends(get_current_user_id), db: Ses
                         user_id=tl.id,
                         message=f"A task '{new_task.title}' has been submitted for your approval on team '{pt.team.name}'.",
                         related_task_id=new_task.id,
-                        db=db
+                        db=db,
+                        category='task'
                     )
             db.commit()
         
@@ -2009,7 +2017,8 @@ def create_task(body: dict, user_id: int = Depends(get_current_user_id), db: Ses
                 user_id=new_task.assignee_id,
                 message=f"New task '{new_task.title}' has been created and assigned to you by {u.username}.",
                 related_task_id=new_task.id,
-                db=db
+                db=db,
+                category='task'
             )
             db.commit()
             
@@ -2327,7 +2336,8 @@ def update_task(task_id: int, body: dict, user_id: int = Depends(get_current_use
                 user_id=task.assignee_id,
                 message=f"You have been assigned to task: '{task.title}' by {actor_username}.",
                 related_task_id=task.id,
-                db=db
+                db=db,
+                category='task'
             )
             db.commit()
             
@@ -2337,7 +2347,8 @@ def update_task(task_id: int, body: dict, user_id: int = Depends(get_current_use
                 user_id=project_lead_id,
                 message=f"User '{actor_username}' updated assignment on task '{task.title}' which requires your approval.",
                 related_task_id=task.id,
-                db=db
+                db=db,
+                category='task'
             )
             db.commit()
 
@@ -2354,7 +2365,8 @@ def update_task(task_id: int, body: dict, user_id: int = Depends(get_current_use
                         user_id=tl.id,
                         message=f"Task '{task.title}' assignment has been updated and requires your approval on team '{pt.team.name}'.",
                         related_task_id=task.id,
-                        db=db
+                        db=db,
+                        category='task'
                     )
             db.commit()
             # Task status transition notification
@@ -2365,7 +2377,7 @@ def update_task(task_id: int, body: dict, user_id: int = Depends(get_current_use
             if task.created_by_id and task.created_by_id != user_id:
                 recipients.add(task.created_by_id)
             for r_id in recipients:
-                trigger_notification(r_id, msg, task.id, db)
+                trigger_notification(r_id, msg, task.id, db, category='task')
                 
             # Review pool notification
             if task.status in ['review', 'active_review'] and old_status not in ['review', 'active_review']:
@@ -2385,7 +2397,7 @@ def update_task(task_id: int, body: dict, user_id: int = Depends(get_current_use
                     elif has_permission("admin.panel", u.id, db):
                         rev_recipients.add(u.id)
                 for r_id in rev_recipients:
-                    trigger_notification(r_id, rev_msg, task.id, db)
+                    trigger_notification(r_id, rev_msg, task.id, db, category='task')
                     
         # Approval notification
         if (task.status == 'done' and old_status != 'done') or (body.get('approval_status') == 'approved' and orig_approval_status != 'approved'):
@@ -2396,21 +2408,21 @@ def update_task(task_id: int, body: dict, user_id: int = Depends(get_current_use
             if task.created_by_id:
                 recipients.add(task.created_by_id)
             for r_id in recipients:
-                trigger_notification(r_id, app_msg, task.id, db)
+                trigger_notification(r_id, app_msg, task.id, db, category='task')
                 
         # Rejection notification
         if body.get('approval_status') == 'rejected' and orig_approval_status != 'rejected':
             reason = body.get('rejection_reason') or body.get('reason') or "rejection reason not specified"
             rej_msg = f"Your task '{task.title}' was rejected by {actor_username}: {reason}."
             if task.assignee_id:
-                trigger_notification(task.assignee_id, rej_msg, task.id, db)
+                trigger_notification(task.assignee_id, rej_msg, task.id, db, category='task')
                 
         # Blocked notification
         if task.is_blocked and not orig_is_blocked:
             reason = body.get('blocker_reason') or body.get('blockers') or task.description or "blocked"
             blk_msg = f"Your task '{task.title}' is blocked: {reason}."
             if task.assignee_id:
-                trigger_notification(task.assignee_id, blk_msg, task.id, db)
+                trigger_notification(task.assignee_id, blk_msg, task.id, db, category='task')
                 
         db.commit()
         broadcast_event("TASK_UPDATED", {"id": task.id, "title": task.title, "status": task.status})
@@ -2459,7 +2471,8 @@ def delete_task(task_id: int, user_id: int = Depends(get_current_user_id), db: S
             user_id=task.assignee_id,
             message=f"Task '{task.title}' has been deleted by {actor_username}.",
             related_task_id=None,
-            db=db
+            db=db,
+            category='task'
         )
         db.commit()
     db.delete(task)
@@ -2506,7 +2519,8 @@ def lead_approve_task(task_id: int, user_id: int = Depends(get_current_user_id),
                 user_id=tl_id,
                 message=f"Task '{task.title}' approved by Project Lead. Awaiting your Team Lead approval on team '{team_name}'.",
                 related_task_id=task.id,
-                db=db
+                db=db,
+                category='task'
             )
     else:
         task.approval_status = 'approved'
@@ -2524,14 +2538,16 @@ def lead_approve_task(task_id: int, user_id: int = Depends(get_current_user_id),
                 user_id=task.assignee_id,
                 message=f"Your task '{task.title}' has been approved by the Project Lead.",
                 related_task_id=task.id,
-                db=db
+                db=db,
+                category='task'
             )
         if task.created_by_id and task.created_by_id != task.assignee_id:
             trigger_notification(
                 user_id=task.created_by_id,
                 message=f"Task '{task.title}' you submitted was approved by the Project Lead.",
                 related_task_id=task.id,
-                db=db
+                db=db,
+                category='task'
             )
             
     db.commit()
@@ -2559,14 +2575,16 @@ def lead_reject_task(task_id: int, body: dict, user_id: int = Depends(get_curren
             user_id=task.created_by_id,
             message=f"Task '{task.title}' was rejected by the Project Lead.{reason_text}",
             related_task_id=task.id,
-            db=db
+            db=db,
+            category='task'
         )
     if task.assignee_id and task.assignee_id != task.created_by_id:
         trigger_notification(
             user_id=task.assignee_id,
             message=f"Task '{task.title}' assigned to you was rejected by the Project Lead.{reason_text}",
             related_task_id=task.id,
-            db=db
+            db=db,
+            category='task'
         )
     db.commit()
     broadcast_event("TASK_UPDATED", {"id": task.id, "title": task.title, "status": task.status})
@@ -2611,14 +2629,16 @@ def team_lead_approve_task(task_id: int, user_id: int = Depends(get_current_user
         user_id=task.assignee_id,
         message=f"Your task '{task.title}' has been approved by the Team Lead.",
         related_task_id=task.id,
-        db=db
+        db=db,
+        category='task'
     )
     if task.created_by_id and task.created_by_id != task.assignee_id:
         trigger_notification(
             user_id=task.created_by_id,
             message=f"Task '{task.title}' was approved by the Team Lead.",
             related_task_id=task.id,
-            db=db
+            db=db,
+            category='task'
         )
     db.commit()
     broadcast_event("TASK_UPDATED", {"id": task.id, "title": task.title, "status": task.status})
@@ -2658,14 +2678,16 @@ def team_lead_reject_task(task_id: int, body: dict, user_id: int = Depends(get_c
             user_id=task.created_by_id,
             message=f"Task '{task.title}' was rejected by the Team Lead.{reason_text}",
             related_task_id=task.id,
-            db=db
+            db=db,
+            category='task'
         )
     if task.assignee_id and task.assignee_id != task.created_by_id:
         trigger_notification(
             user_id=task.assignee_id,
             message=f"Task '{task.title}' assigned to you was rejected by the Team Lead.{reason_text}",
             related_task_id=task.id,
-            db=db
+            db=db,
+            category='task'
         )
     db.commit()
     broadcast_event("TASK_UPDATED", {"id": task.id, "title": task.title, "status": task.status})
@@ -2737,7 +2759,7 @@ def create_task_comment(body: dict, user_id: int = Depends(get_current_user_id),
     comment_text = content[:60] + "..." if len(content) > 60 else content
     msg = f"{u.username} commented on task '{task.title}': \"{comment_text}\""
     for r_id in recipients:
-        trigger_notification(r_id, msg, task.id, db)
+        trigger_notification(r_id, msg, task.id, db, category='comment')
     db.commit()
     
     return {"status": "ok"}
@@ -2776,7 +2798,7 @@ def create_project_history_comment(body: dict, user_id: int = Depends(get_curren
     if project.assignee_id and project.assignee_id != user_id:
         note_text = note[:60] + "..." if note and len(note) > 60 else (note or "")
         msg = f"{u.username} commented on project '{project.title}': \"{note_text}\""
-        trigger_notification(project.assignee_id, msg, None, db)
+        trigger_notification(project.assignee_id, msg, None, db, category='comment')
         db.commit()
         
     return {"status": "ok"}
@@ -2863,17 +2885,20 @@ def _ensure_project_member(project_id: str, assignee_id: int, actor_username: st
             user_id=assignee_id,
             message=f"You have been added as a member of project '{proj_title}' by {actor_username}.",
             related_task_id=None,
-            db=db
+            db=db,
+            category='project'
         )
 
-def trigger_notification(user_id: int, message: str, related_task_id: Optional[int], db: Session):
+def trigger_notification(user_id: int, message: str, related_task_id: Optional[int], db: Session, category: str = 'general'):
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     notif = Notification(
         user_fk=user_id,
         message=message,
         is_read=0,
         created_at=now,
-        related_task_id=related_task_id
+        related_task_id=related_task_id,
+        category=category,
+        deleted_at=None
     )
     db.add(notif)
 
@@ -3003,8 +3028,14 @@ def delete_published_shortcut(shortcut_id: int, user_id: int = Depends(get_curre
 # --- NOTIFICATIONS ---
 
 @app.get('/api/notifications')
-def get_notifications(user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    notifs = db.query(Notification).filter(Notification.user_fk == user_id).order_by(Notification.id.desc()).limit(50).all()
+def get_notifications(category: Optional[str] = None, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    query = db.query(Notification).filter(
+        Notification.user_fk == user_id,
+        Notification.deleted_at == None
+    )
+    if category and category != 'all':
+        query = query.filter(Notification.category == category)
+    notifs = query.order_by(Notification.id.desc()).limit(50).all()
     return [serialize_model(n, db) for n in notifs]
 
 @app.post('/api/notifications')
@@ -3021,17 +3052,51 @@ def create_notification(body: dict, user_id: int = Depends(get_current_user_id),
         message=body.get('message'),
         is_read=0,
         created_at=now,
-        related_task_id=body.get('related_task_id')
+        related_task_id=body.get('related_task_id'),
+        category=body.get('category', 'general'),
+        deleted_at=None
     )
     db.add(new_notif)
     db.commit()
     return {"status": "ok"}
+
+@app.put('/api/notifications/mark-all-read')
+def mark_all_notifications_read(user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    count = db.query(Notification).filter(
+        Notification.user_fk == user_id,
+        Notification.is_read == 0,
+        Notification.deleted_at == None
+    ).update({'is_read': 1}, synchronize_session=False)
+    db.commit()
+    return {"status": "ok", "count": count}
 
 @app.put('/api/notifications/{notif_id}')
 def mark_notification_read(notif_id: int, body: dict, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
     notif = db.query(Notification).filter(Notification.id == notif_id, Notification.user_fk == user_id).first()
     if notif:
         notif.is_read = body.get('is_read', 0)
+        db.commit()
+    return {"status": "ok"}
+
+@app.delete('/api/notifications/clear-read')
+def clear_read_notifications(user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    count = db.query(Notification).filter(
+        Notification.user_fk == user_id,
+        Notification.is_read == 1,
+        Notification.deleted_at == None
+    ).update({'deleted_at': now}, synchronize_session=False)
+    db.commit()
+    return {"status": "ok", "count": count}
+
+@app.delete('/api/notifications/{notif_id}')
+def delete_notification(notif_id: int, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    notif = db.query(Notification).filter(
+        Notification.id == notif_id,
+        Notification.user_fk == user_id
+    ).first()
+    if notif:
+        notif.deleted_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         db.commit()
     return {"status": "ok"}
 

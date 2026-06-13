@@ -249,6 +249,8 @@ class Notification(Base):
     is_read = Column(Integer, default=0)
     created_at = Column(String)
     related_task_id = Column(Integer)
+    category = Column(String, default='general')   # task | project | admin | comment | general
+    deleted_at = Column(String, nullable=True)      # soft-delete timestamp; NULL = visible
     
     user_rel = relationship("User")
 
